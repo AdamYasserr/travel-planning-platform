@@ -1,0 +1,41 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+build/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Uploaded media
+backend/uploads/
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Local backups and temporary bootstrap project
+backend-before-cleanup.tar.gz
+backend-bootstrap/
+
+# Uploaded media
+backend/uploads/
+
+# TypeScript build cache
+*.tsbuildinfo
