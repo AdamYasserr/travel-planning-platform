@@ -9,4 +9,47 @@ Guide me step by step through Phase 1 for the hotel and room schemas and DTOs. E
 
 How the output was used:
 Used the explanations and code suggestions to create the Hotel and Room schemas, hotel and room DTOs, and register the schemas in HotelsModule. Reviewed the changes and confirmed that the backend build succeeds.
+
 ================================================
+
+# AI Assistance Log — Flight Management
+
+**Team Member:** Hania Baher
+**Module:** Flight Management
+**AI Tool:** ChatGPT (OpenAI)
+
+## Purpose of AI Assistance
+
+ChatGPT was used to assist with implementing and debugging the Flight Management backend using NestJS, TypeScript, Mongoose, and MongoDB.
+
+## Tasks Assisted by AI
+
+1. **Airline Management (FLT-01):** Assisted with airline schemas, DTOs, controller endpoints, role-based permissions, and service logic.
+
+2. **Airport Listing (FLT-02):** Assisted with implementing the airport schema, service, controller, and module registration.
+
+3. **Flight Creation and Editing (FLT-03, FLT-05):** Assisted with creating flight endpoints, validating flight information, checking permissions, and enforcing departure and arrival time restrictions.
+
+4. **Cabin Inventory (FLT-04):** Assisted with creating and updating cabin inventory, validating capacity and pricing, managing baggage allowances, and protecting allocated seats during capacity updates.
+
+5. **Flight Cancellation (FLT-06):** Assisted with validating cancellation restrictions and identifying the dependency on booking, refund, and notification integration.
+
+6. **Baggage Policy (FLT-08):** Assisted with implementing baggage policy schemas, DTOs, and API operations, including extra baggage pricing and limits.
+
+7. **Cancellation Policy (FLT-09):** Assisted with implementing cancellation refund tiers and validating refund percentages and departure-day thresholds.
+
+8. **Flight Status Management (FLT-30):** Assisted with implementing Scheduled, Cancelled, and Departed statuses, scheduled status updates, and editing restrictions.
+
+9. **Field Validation (GEN-02):** Assisted with request validation using class-validator, DTO decorators, and NestJS ValidationPipe.
+
+10. **Debugging and Integration:** Assisted with TypeScript build errors, Mongoose ObjectId typing, module registration, Git commands, and reviewing code changes.
+
+## Verification
+
+The generated and modified code was reviewed through VS Code and checked using `npm run build`.
+
+Database integration, API behavior, authorization, and booking-related workflows require additional testing before being considered fully verified.
+
+## Pending Integration
+
+Flight cancellation remains dependent on the flight-booking, payment/refund, and notification components being implemented and integrated.

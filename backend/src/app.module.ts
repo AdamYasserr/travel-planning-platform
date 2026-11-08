@@ -1,3 +1,4 @@
+
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
@@ -15,11 +16,17 @@ import { MediaModule } from './modules/media/media.module';
 import { FxRatesModule } from './integrations/fx-rates/fx-rates.module';
 import { HotelsModule } from './modules/hotels/hotels.module';
 
+// Hania - Flight Management Modules
+import { AirlinesModule } from './modules/airlines/airlines.module';
+import { FlightsModule } from './modules/flights/flights.module';
+
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+
+import { AirportsModule } from './modules/airports/airports.module';
 
 @Module({
   imports: [
@@ -36,6 +43,12 @@ import { AppService } from './app.service';
     MediaModule,
     HotelsModule,
     FxRatesModule,
+
+    // Hania - Flight Management Modules
+    AirlinesModule,
+    FlightsModule,
+    AirportsModule,
+
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
