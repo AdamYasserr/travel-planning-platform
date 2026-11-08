@@ -1,0 +1,12 @@
+================================================
+Date: 2026-11-08
+Student: Masa
+Tool: ChatGPT (Codex)
+Related Requirements: HTL-01, HTL-03, HTL-04, HTL-09, HTL-10
+
+Prompt:
+Guide me step by step through Phase 1 for the hotel and room schemas and DTOs. Explain the requirements, provide code examples, and explain how the schemas and DTOs differ.
+
+How the output was used:
+Used the explanations and code suggestions to create the Hotel and Room schemas, hotel and room DTOs, and register the schemas in HotelsModule. Reviewed the changes and confirmed that the backend build succeeds.
+================================================

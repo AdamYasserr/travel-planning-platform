@@ -13,6 +13,7 @@ import { ReportsModule } from './modules/reports/reports.module';
 import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
 import { FxRatesModule } from './integrations/fx-rates/fx-rates.module';
+import { HotelsModule } from './modules/hotels/hotels.module';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -33,6 +34,7 @@ import { AppService } from './app.service';
     ReportsModule,
     UsersModule,
     MediaModule,
+    HotelsModule,
     FxRatesModule,
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
