@@ -7,7 +7,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { HydratedDocument, Model, Types } from 'mongoose';
 
 import {
   Flight,
@@ -17,6 +17,7 @@ import {
 import { Airline } from '../airlines/schemas/airline.schema';
 import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
+import { Airport } from '../airports/schemas/airport.schema';
 
 import {
   CreateFlightDto,
@@ -34,6 +35,9 @@ export class FlightsService {
 
     @InjectModel(User.name)
     private readonly userModel: Model<User>,
+
+    @InjectModel(Airport.name)
+private readonly airportModel: Model<Airport>,
   ) {}
 
   // Check airline management permission
@@ -111,16 +115,16 @@ export class FlightsService {
       );
     }
 
-    return this.flightModel.create({
-      ...dto,
-      airlineId: new Types.ObjectId(dto.airlineId),
-      departureAirport:
-        dto.departureAirport.trim().toUpperCase(),
-      arrivalAirport:
-        dto.arrivalAirport.trim().toUpperCase(),
-      departureTime,
-      arrivalTime,
-    });
+   const flight = await this.flightModel.create({
+  ...dto,
+  airlineId: new Types.ObjectId(dto.airlineId),
+  departureAirport: dto.departureAirport.trim().toUpperCase(),
+  arrivalAirport: dto.arrivalAirport.trim().toUpperCase(),
+  departureTime,
+  arrivalTime,
+});
+
+return this.toLocalFlightResponse(flight);
   }
 
 
@@ -238,7 +242,7 @@ export class FlightsService {
       );
     }
 
-    return updatedFlight;
+   return this.toLocalFlightResponse(updatedFlight);
   }
 
 
@@ -290,4 +294,62 @@ export class FlightsService {
       'Flight cancellation is unavailable until booking impact checks are integrated',
     );
   }
+
+  async toLocalFlightResponse(flight: HydratedDocument<Flight>) {
+  const airportCodes = [
+    flight.departureAirport,
+    flight.arrivalAirport,
+  ];
+
+  const airports = await this.airportModel
+    .find({ iataCode: { $in: airportCodes } })
+    .select({ iataCode: 1, timeZone: 1 })
+    .lean()
+    .exec();
+
+  const departureAirport = airports.find(
+    (airport) => airport.iataCode === flight.departureAirport,
+  );
+  const arrivalAirport = airports.find(
+    (airport) => airport.iataCode === flight.arrivalAirport,
+  );
+
+  if (!departureAirport || !arrivalAirport) {
+    throw new NotFoundException(
+      'A flight airport or its time zone was not found',
+    );
+  }
+
+  const formatLocalDateTime = (date: Date, timeZone: string): string => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      parts.find((part) => part.type === type)?.value ?? '';
+
+    return `${value('year')}-${value('month')}-${value('day')}T${value('hour')}:${value('minute')}:${value('second')}`;
+  };
+
+  return {
+    ...flight.toObject(),
+    departureTimeLocal: formatLocalDateTime(
+      flight.departureTime,
+      departureAirport.timeZone,
+    ),
+    departureTimeZone: departureAirport.timeZone,
+    arrivalTimeLocal: formatLocalDateTime(
+      flight.arrivalTime,
+      arrivalAirport.timeZone,
+    ),
+    arrivalTimeZone: arrivalAirport.timeZone,
+  };
+}
 }

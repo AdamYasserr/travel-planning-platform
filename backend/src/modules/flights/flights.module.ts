@@ -6,6 +6,10 @@ import { FlightsController } from './flights.controller';
 import { CabinInventoryService } from './cabin-inventory.service';
 import { CabinInventoryController } from './cabin-inventory.controller';
 import { FlightStatusService } from './flight-status.service';
+import {
+  Airport,
+  AirportSchema,
+} from '../airports/schemas/airport.schema';
 
 import {
   Flight,
@@ -45,6 +49,10 @@ import { FlightsService } from './flights.service';
         name: User.name,
         schema: UserSchema,
       },
+      {
+  name: Airport.name,
+  schema: AirportSchema,
+},
     ]),
   ],
   controllers: [
