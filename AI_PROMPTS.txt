@@ -4,12 +4,18 @@ Student: Masa
 Tool: ChatGPT (Codex)
 Related Requirements: HTL-01, HTL-03, HTL-04, HTL-09, HTL-10
 
-Prompt:
-Guide me step by step through Phase 1 for the hotel and room schemas and DTOs. Explain the requirements, provide code examples, and explain how the schemas and DTOs differ.
+Prompts used:
+1.  "Guide me step by step through Phase 1 for the hotel and room schemas and DTOs. Explain the requirements, provide code examples, and explain how the schemas and DTOs differ."
+
+2. “Guide me step by step through Phase 2 hotel management. Use the reviewed requirements and current project structure. Explain each DTO, controller route, service method, and which requirement it covers. Give me copy-paste code and wait for me to build after each step.”
+
+3. “Help me implement HTL-02, HTL-05, HTL-06, HTL-08, and GEN-05. Check the requirement wording, use the existing schemas and DTOs, and explain authorization and reservation checks.”
+
+4. “Check GEN-06 in the workbook. Help me format departure and arrival flight times in each airport’s IANA time zone while preserving the stored UTC values. Explain where the formatter should be reused.”
 
 How the output was used:
-Used the explanations and code suggestions to create the Hotel and Room schemas, hotel and room DTOs, and register the schemas in HotelsModule. Reviewed the changes and confirmed that the backend build succeeds.
-
+1.Used the explanations and code suggestions to create the Hotel and Room schemas, hotel and room DTOs, and register the schemas in HotelsModule. Reviewed the changes and confirmed that the backend build succeeds.
+2.Used the guidance and code examples to implement hotel and room management routes, validation, pagination, availability and blocking rules, room status, and hotel details. Added a reusable flight-time formatter using airport time zones. Reviewed the changes and confirmed that `npm run build` succeeds.
 ================================================
 
 # AI Assistance Log — Flight Management
