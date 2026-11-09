@@ -24,6 +24,7 @@ import {
   ApiProperty,
   ApiPropertyOptional,
   PartialType,
+  PickType
 } from '@nestjs/swagger';
 
 export class HotelCancellationTierDto {
@@ -263,4 +264,24 @@ export class SetRoomAvailabilityDto {
   @Type(() => RoomDateRangeDto)
   @Validate(DateRangesDoNotOverlapConstraint)
   availabilityRanges: RoomDateRangeDto[];
+}
+
+  export class UpdateRoomDto extends PartialType(
+  PickType(
+    CreateRoomDto,
+    ['beds', 'maxOccupancy', 'pricePerNight'] as const,
+  ),
+) {}
+
+export class PaginationQueryDto {
+  @ApiPropertyOptional({
+    example: 1,
+    minimum: 1,
+    default: 1,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page = 1;
 }
