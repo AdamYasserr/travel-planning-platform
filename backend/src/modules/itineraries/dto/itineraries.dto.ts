@@ -5,6 +5,7 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
   IsMongoId,
   IsNotEmpty,
   IsNumber,
@@ -13,12 +14,14 @@ import {
   Length,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import {
   ApiProperty,
   ApiPropertyOptional,
   PartialType,
 } from '@nestjs/swagger';
+import { ItineraryVisibility } from '../enums/itinerary-visibility.enum';
 import { BudgetCategory } from '../schemas/budget.schema';
 
 export class CreateItineraryDto {
@@ -51,7 +54,15 @@ export class CreateItineraryDto {
   startDate: string;
 }
 
-export class UpdateItineraryDto extends PartialType(CreateItineraryDto) {}
+export class UpdateItineraryDto extends PartialType(CreateItineraryDto) {
+  @ApiPropertyOptional({
+    enum: Object.values(ItineraryVisibility),
+    example: ItineraryVisibility.PUBLIC,
+  })
+  @IsOptional()
+  @IsEnum(ItineraryVisibility)
+  visibility?: ItineraryVisibility;
+}
 
 export class CreateItineraryDayDto {
   @ApiProperty({
@@ -102,6 +113,18 @@ export class CreateItineraryActivityDto {
   @IsNumber()
   @Min(0)
   cost?: number;
+
+  @ApiPropertyOptional({
+    description: 'Three-letter currency code for the activity cost',
+    example: 'EUR',
+  })
+  @ValidateIf((dto: CreateItineraryActivityDto) => dto.cost !== undefined)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @IsString()
+  @Length(3, 3)
+  costCurrency?: string;
 }
 
 export class UpdateItineraryActivityDto extends PartialType(
@@ -189,3 +212,22 @@ export class CreateTransportCostDto {
 export class UpdateTransportCostDto extends PartialType(
   CreateTransportCostDto,
 ) {}
+
+export class ReorderItineraryDaysDto {
+  @ApiProperty({
+    description: 'MongoDB ObjectId of the day to move',
+    example: '507f1f77bcf86cd799439011',
+  })
+  @IsMongoId()
+  dayId: string;
+
+  @ApiProperty({
+    description: 'New day position, starting at 1',
+    example: 2,
+    minimum: 1,
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  newPosition: number;
+}

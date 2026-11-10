@@ -4,7 +4,6 @@ import {
   InternalServerErrorException,
   Injectable,
   Logger,
-  NotImplementedException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -15,6 +14,10 @@ import { extname } from 'node:path';
 import sharp from 'sharp';
 
 import { User, UserDocument } from '../../users/user.schema';
+import {
+  Itinerary,
+  ItineraryDocument,
+} from '../itineraries/schemas/itinerary.schema';
 import { MediaTargetType, UploadMediaDto } from './dto/upload-media.dto';
 import { Media, MediaDocument } from './schemas/media.schema';
 import { LocalMediaStorage } from './media.storage';
@@ -26,22 +29,21 @@ interface UploadedMediaFile {
   buffer: Buffer;
 }
 
-const ALLOWED_MEDIA: Record<string, {
-  mimeType: string;
-  matches: (buffer: Buffer) => boolean;
-}> = {
-  '.jpg': {
-    mimeType: 'image/jpeg',
-    matches: isJpeg,
-  },
-  '.jpeg': {
-    mimeType: 'image/jpeg',
-    matches: isJpeg,
-  },
-  '.png': {
-    mimeType: 'image/png',
-    matches: isPng,
-  },
+interface ActivityWithImages {
+  _id: Types.ObjectId;
+  imageIds: Types.ObjectId[];
+}
+
+const ALLOWED_MEDIA: Record<
+  string,
+  {
+    mimeType: string;
+    matches: (buffer: Buffer) => boolean;
+  }
+> = {
+  '.jpg': { mimeType: 'image/jpeg', matches: isJpeg },
+  '.jpeg': { mimeType: 'image/jpeg', matches: isJpeg },
+  '.png': { mimeType: 'image/png', matches: isPng },
 };
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -62,6 +64,7 @@ function isPng(buffer: Buffer): boolean {
   const signature = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   ]);
+
   if (buffer.length < 33 || !buffer.subarray(0, 8).equals(signature)) {
     return false;
   }
@@ -90,6 +93,8 @@ export class MediaService {
     private readonly mediaModel: Model<MediaDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(Itinerary.name)
+    private readonly itineraryModel: Model<Itinerary>,
     private readonly storage: LocalMediaStorage,
   ) {}
 
@@ -106,27 +111,51 @@ export class MediaService {
       throw new UnauthorizedException('Invalid authenticated user');
     }
 
+    const ownerObjectId = new Types.ObjectId(ownerId);
     const owner = await this.userModel
       .findOne({
-        _id: ownerId,
+        _id: ownerObjectId,
         isActive: true,
         isSuspended: false,
         deactivatedAt: null,
       })
-      .select('_id');
+      .select('_id')
+      .exec();
+
     if (!owner) {
       throw new UnauthorizedException('Account is unavailable');
     }
 
-    if (dto.targetType !== MediaTargetType.PROFILE) {
-      throw new NotImplementedException(
-        'Content media attachment requires the target module ownership contract',
-      );
-    }
+    let itinerary: ItineraryDocument | null = null;
 
-    if (dto.targetType === MediaTargetType.PROFILE && dto.targetId) {
+    if (dto.targetType === MediaTargetType.PROFILE) {
+      if (dto.targetId) {
+        throw new BadRequestException(
+          'Profile media must not include targetId',
+        );
+      }
+    } else if (dto.targetType === MediaTargetType.ACTIVITY) {
+      if (!dto.targetId || !Types.ObjectId.isValid(dto.targetId)) {
+        throw new BadRequestException(
+          'A valid activity targetId is required',
+        );
+      }
+
+      itinerary = await this.itineraryModel
+        .findOne({
+          ownerId: ownerObjectId,
+          'days.activities._id': new Types.ObjectId(dto.targetId),
+        })
+        .exec();
+
+      if (!itinerary) {
+        throw new NotFoundException(
+          'Activity not found in one of your itineraries',
+        );
+      }
+    } else {
       throw new BadRequestException(
-        'Profile media must not include targetId',
+        'This media target type is not supported yet',
       );
     }
 
@@ -137,11 +166,14 @@ export class MediaService {
       file.buffer.length < 1 ||
       file.buffer.length !== file.size
     ) {
-      throw new BadRequestException('Media file must be between 1 byte and 5 MB');
+      throw new BadRequestException(
+        'Media file must be between 1 byte and 5 MB',
+      );
     }
 
     const extension = extname(file.originalname).toLowerCase();
     const mediaType = ALLOWED_MEDIA[extension];
+
     if (
       !mediaType ||
       mediaType.mimeType !== file.mimetype.toLowerCase() ||
@@ -157,9 +189,11 @@ export class MediaService {
     const storageKey = `${randomUUID()}${extension}`;
     await this.storage.save(storageKey, file.buffer);
 
+    let media: MediaDocument | undefined;
+
     try {
-      const media = await this.mediaModel.create({
-        ownerId: new Types.ObjectId(ownerId),
+      media = await this.mediaModel.create({
+        ownerId: ownerObjectId,
         targetType: dto.targetType,
         targetId: dto.targetId
           ? new Types.ObjectId(dto.targetId)
@@ -171,15 +205,46 @@ export class MediaService {
         storageKey,
       });
 
+      if (
+        dto.targetType === MediaTargetType.ACTIVITY &&
+        itinerary &&
+        dto.targetId
+      ) {
+        const activity = this.findActivity(itinerary, dto.targetId);
+
+        if (!activity) {
+          throw new NotFoundException('Activity not found');
+        }
+
+        activity.imageIds ??= [];
+        activity.imageIds.push(media._id);
+        await itinerary.save();
+      }
+
       return {
         message: 'Media uploaded successfully',
         media: this.toPublicMedia(media),
       };
     } catch (error: unknown) {
+      if (media) {
+        try {
+          await this.mediaModel.deleteOne({ _id: media._id }).exec();
+        } catch {
+          this.logger.warn('Media metadata cleanup failed after upload error');
+        }
+      }
+
       try {
         await this.storage.remove(storageKey);
       } catch {
-        this.logger.warn('Media cleanup failed after metadata persistence error');
+        this.logger.warn('Media file cleanup failed after upload error');
+      }
+
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
       }
 
       if (
@@ -190,14 +255,84 @@ export class MediaService {
       ) {
         throw new ConflictException('Media metadata already exists');
       }
+
       throw new InternalServerErrorException(
-        'Could not save media metadata',
+        'Could not save media or attach it to the activity',
       );
     }
   }
 
+  async deleteActivityImage(
+    ownerId: string,
+    activityId: string,
+    imageId: string,
+  ) {
+    if (
+      !Types.ObjectId.isValid(ownerId) ||
+      !Types.ObjectId.isValid(activityId) ||
+      !Types.ObjectId.isValid(imageId)
+    ) {
+      throw new BadRequestException('Invalid user, activity, or image ID');
+    }
+
+    const ownerObjectId = new Types.ObjectId(ownerId);
+    const activityObjectId = new Types.ObjectId(activityId);
+    const imageObjectId = new Types.ObjectId(imageId);
+
+    const itinerary = await this.itineraryModel
+      .findOne({
+        ownerId: ownerObjectId,
+        'days.activities._id': activityObjectId,
+      })
+      .exec();
+
+    if (!itinerary) {
+      throw new NotFoundException(
+        'Activity not found in one of your itineraries',
+      );
+    }
+
+    const activity = this.findActivity(itinerary, activityId);
+
+    if (!activity) {
+      throw new NotFoundException('Activity not found');
+    }
+
+    const media = await this.mediaModel
+      .findOne({
+        _id: imageObjectId,
+        ownerId: ownerObjectId,
+        targetType: MediaTargetType.ACTIVITY,
+        targetId: activityObjectId,
+      })
+      .select('+storageKey')
+      .exec();
+
+    if (!media) {
+      throw new NotFoundException('Activity image not found');
+    }
+
+    activity.imageIds = (activity.imageIds ?? []).filter(
+      (id) => id.toString() !== imageId,
+    );
+
+    await itinerary.save();
+    await this.mediaModel.deleteOne({ _id: imageObjectId }).exec();
+
+    try {
+      await this.storage.remove(media.storageKey);
+    } catch {
+      this.logger.warn('Activity image file cleanup failed after deletion');
+    }
+
+    return { message: 'Activity image deleted successfully' };
+  }
+
   async getContent(ownerId: string, mediaId: string) {
-    if (!Types.ObjectId.isValid(mediaId)) {
+    if (
+      !Types.ObjectId.isValid(ownerId) ||
+      !Types.ObjectId.isValid(mediaId)
+    ) {
       throw new NotFoundException('Media not found');
     }
 
@@ -205,9 +340,12 @@ export class MediaService {
       .findOne({
         _id: mediaId,
         ownerId: new Types.ObjectId(ownerId),
-        targetType: MediaTargetType.PROFILE,
+        targetType: {
+          $in: [MediaTargetType.PROFILE, MediaTargetType.ACTIVITY],
+        },
       })
-      .select('+storageKey');
+      .select('+storageKey')
+      .exec();
 
     if (!media) {
       throw new NotFoundException('Media not found');
@@ -218,6 +356,17 @@ export class MediaService {
       mimeType: media.mimeType,
       originalName: media.originalName,
     };
+  }
+
+  private findActivity(
+    itinerary: ItineraryDocument,
+    activityId: string,
+  ): ActivityWithImages | undefined {
+    return itinerary.days
+      .flatMap((day) =>
+        day.activities as unknown as ActivityWithImages[],
+      )
+      .find((activity) => activity._id.toString() === activityId);
   }
 
   private toPublicMedia(media: MediaDocument) {
@@ -239,6 +388,7 @@ export class MediaService {
       .replace(/["']/g, '_')
       .trim()
       .slice(0, 120);
+
     return baseName || `upload${extension}`;
   }
 
@@ -247,9 +397,7 @@ export class MediaService {
     expectedMimeType: string,
   ): Promise<void> {
     try {
-      const image = sharp(buffer, {
-        failOn: 'error',
-      });
+      const image = sharp(buffer, { failOn: 'error' });
       const metadata = await image.metadata();
 
       if (
@@ -264,9 +412,7 @@ export class MediaService {
         throw new Error('Unsupported or unsafe image metadata');
       }
 
-      await sharp(buffer, {
-        failOn: 'error',
-      })
+      await sharp(buffer, { failOn: 'error' })
         .rotate()
         .raw()
         .toBuffer();
