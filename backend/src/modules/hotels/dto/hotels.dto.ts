@@ -19,11 +19,13 @@ import {
   Validate,
   ValidatorConstraint,
   ValidatorConstraintInterface,
+    ValidationArguments,
 } from 'class-validator';
 import {
   ApiProperty,
   ApiPropertyOptional,
   PartialType,
+  PickType
 } from '@nestjs/swagger';
 
 export class HotelCancellationTierDto {
@@ -263,4 +265,122 @@ export class SetRoomAvailabilityDto {
   @Type(() => RoomDateRangeDto)
   @Validate(DateRangesDoNotOverlapConstraint)
   availabilityRanges: RoomDateRangeDto[];
+}
+
+  export class UpdateRoomDto extends PartialType(
+  PickType(
+    CreateRoomDto,
+    ['beds', 'maxOccupancy', 'pricePerNight'] as const,
+  ),
+) {}
+
+export class PaginationQueryDto {
+  @ApiPropertyOptional({
+    example: 1,
+    minimum: 1,
+    default: 1,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page = 1;
+}
+
+export class BlockRoomDto {
+  @ApiProperty({
+    type: [RoomDateRangeDto],
+    example: [{ startDate: '2026-12-01', endDate: '2026-12-04' }],
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => RoomDateRangeDto)
+  @Validate(DateRangesDoNotOverlapConstraint)
+  blockedRanges: RoomDateRangeDto[];
+}
+
+@ValidatorConstraint({ name: 'roomStatusEndAfterStart', async: false })
+class RoomStatusEndAfterStartConstraint
+  implements ValidatorConstraintInterface
+{
+  validate(endDate: unknown, args: ValidationArguments): boolean {
+    const startDate = (args.object as { startDate?: string }).startDate;
+
+    if (typeof startDate !== 'string' || typeof endDate !== 'string') {
+      return false;
+    }
+
+    return Date.parse(endDate) > Date.parse(startDate);
+  }
+
+  defaultMessage(): string {
+    return 'endDate must be after startDate';
+  }
+}
+
+export class RoomStatusQueryDto {
+  @ApiProperty({
+    description: 'First date to check, inclusive, in YYYY-MM-DD format',
+    example: '2026-12-01',
+  })
+  @IsDateString({ strict: true })
+  startDate: string;
+
+  @ApiProperty({
+    description: 'Last date to check, exclusive, in YYYY-MM-DD format',
+    example: '2026-12-05',
+  })
+  @IsDateString({ strict: true })
+  @Validate(RoomStatusEndAfterStartConstraint)
+  endDate: string;
+}
+
+@ValidatorConstraint({ name: 'hotelDetailsDatePair', async: false })
+class HotelDetailsDatePairConstraint
+  implements ValidatorConstraintInterface
+{
+  validate(_value: unknown, args: ValidationArguments): boolean {
+    const query = args.object as {
+      checkInDate?: string;
+      checkOutDate?: string;
+    };
+
+    const hasCheckIn = Boolean(query.checkInDate);
+    const hasCheckOut = Boolean(query.checkOutDate);
+
+    if (hasCheckIn !== hasCheckOut) {
+      return false;
+    }
+
+    if (!hasCheckIn && !hasCheckOut) {
+      return true;
+    }
+
+    return Date.parse(query.checkOutDate!) > Date.parse(query.checkInDate!);
+  }
+
+  defaultMessage(): string {
+    return 'Provide both checkInDate and checkOutDate, with checkOutDate after checkInDate';
+  }
+}
+
+export class HotelDetailsQueryDto {
+  @ApiPropertyOptional({
+    description: 'Check-in date in YYYY-MM-DD format',
+    example: '2026-12-01',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  @Validate(HotelDetailsDatePairConstraint)
+  checkInDate?: string;
+
+  @ApiPropertyOptional({
+    description: 'Check-out date in YYYY-MM-DD format',
+    example: '2026-12-05',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  @Validate(HotelDetailsDatePairConstraint)
+  checkOutDate?: string;
 }
