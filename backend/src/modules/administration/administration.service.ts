@@ -11,6 +11,8 @@ import { randomBytes } from 'crypto';
 
 import { User, UserDocument } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
+import { Airline, AirlineDocument } from '../airlines/schemas/airline.schema';
+import { Hotel, HotelDocument } from '../hotels/schemas/hotel.schema';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   CreateModeratorDto,
@@ -21,14 +23,23 @@ import {
   QueryAccountsDto,
 } from './dto/query-accounts.dto';
 import { SuspendAccountDto } from './dto/suspend-account.dto';
+import { ProviderStatusDto } from './dto/deactivate-provider.dto';
 
 @Injectable()
 export class AdministrationService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(Airline.name)
+    private readonly airlineModel: Model<AirlineDocument>,
+    @InjectModel(Hotel.name)
+    private readonly hotelModel: Model<HotelDocument>,
     private readonly auditLogs: AuditLogsService,
   ) {}
+
+  private getProviderModel(type: ProviderType): Model<any> {
+    return type === ProviderType.HOTEL ? this.hotelModel : this.airlineModel;
+  }
 
   async resetUserPassword(userId: string, actorId: string) {
     if (!Types.ObjectId.isValid(userId)) {
@@ -90,6 +101,13 @@ export class AdministrationService {
     const existing = await this.userModel.findOne({ email });
     if (existing) {
       throw new ConflictException('Email is already in use');
+    }
+
+    const provider = await this.getProviderModel(dto.providerType)
+      .findById(dto.providerId)
+      .lean();
+    if (!provider) {
+      throw new NotFoundException(`${dto.providerType} not found`);
     }
 
     const user = await this.userModel.create({
@@ -234,6 +252,45 @@ export class AdministrationService {
     return {
       message: 'Account reactivated',
       user: { id: user._id.toString(), email: user.email, isSuspended: false },
+    };
+  }
+
+  async setProviderActive(
+    type: ProviderType,
+    providerId: string,
+    active: boolean,
+    dto: ProviderStatusDto,
+    actorId: string,
+  ) {
+    if (!Types.ObjectId.isValid(providerId)) {
+      throw new BadRequestException('Invalid provider id');
+    }
+
+    const model = this.getProviderModel(type);
+    const provider = await model.findById(providerId).lean();
+    if (!provider) {
+      throw new NotFoundException(`${type} not found`);
+    }
+    if (provider.isActive === active) {
+      throw new ConflictException(
+        active ? `${type} is already active` : `${type} is already deactivated`,
+      );
+    }
+
+    // Only the flag changes: existing Confirmed bookings stay valid.
+    await model.updateOne({ _id: providerId }, { isActive: active });
+
+    await this.auditLogs.record({
+      actorId,
+      action: active ? 'PROVIDER_REACTIVATED' : 'PROVIDER_DEACTIVATED',
+      targetType: type,
+      targetId: providerId,
+      details: { name: provider.name, reason: dto.reason ?? null },
+    });
+
+    return {
+      message: active ? `${type} reactivated` : `${type} deactivated`,
+      provider: { id: providerId, name: provider.name, isActive: active },
     };
   }
 }

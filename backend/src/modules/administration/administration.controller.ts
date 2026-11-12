@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseEnumPipe,
   Patch,
   Post,
   Query,
@@ -19,9 +20,13 @@ import {
 import { AdministrationService } from './administration.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '../../common/enums/user-role.enum';
-import { CreateModeratorDto } from './dto/create-moderator.dto';
+import {
+  CreateModeratorDto,
+  ProviderType,
+} from './dto/create-moderator.dto';
 import { QueryAccountsDto } from './dto/query-accounts.dto';
 import { SuspendAccountDto } from './dto/suspend-account.dto';
+import { ProviderStatusDto } from './dto/deactivate-provider.dto';
 
 interface AuthenticatedRequest {
   user: { userId: string };
@@ -57,6 +62,7 @@ export class AdministrationController {
   @ApiResponse({ status: 400, description: 'Validation failed.' })
   @ApiResponse({ status: 401, description: 'Authentication is required.' })
   @ApiResponse({ status: 403, description: 'Administrator role is required.' })
+  @ApiResponse({ status: 404, description: 'Hotel or airline not found.' })
   @ApiResponse({ status: 409, description: 'Email is already in use.' })
   createModerator(
     @Body() dto: CreateModeratorDto,
@@ -106,5 +112,43 @@ export class AdministrationController {
     @Req() req: AuthenticatedRequest,
   ) {
     return this.administrationService.reactivateAccount(userId, dto, req.user.userId);
+  }
+
+  @Patch('providers/:type/:id/deactivate')
+  @ApiOperation({ summary: 'Deactivate a hotel or airline (hidden from search, cannot be booked)' })
+  @ApiParam({ name: 'type', enum: ProviderType })
+  @ApiParam({ name: 'id', description: 'Hotel or airline MongoDB ObjectId' })
+  @ApiResponse({ status: 200, description: 'Provider deactivated. Existing Confirmed bookings stay valid.' })
+  @ApiResponse({ status: 400, description: 'Invalid type or id.' })
+  @ApiResponse({ status: 401, description: 'Authentication is required.' })
+  @ApiResponse({ status: 403, description: 'Administrator role is required.' })
+  @ApiResponse({ status: 404, description: 'Provider not found.' })
+  @ApiResponse({ status: 409, description: 'Provider is already deactivated.' })
+  deactivateProvider(
+    @Param('type', new ParseEnumPipe(ProviderType)) type: ProviderType,
+    @Param('id') id: string,
+    @Body() dto: ProviderStatusDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.administrationService.setProviderActive(type, id, false, dto, req.user.userId);
+  }
+
+  @Patch('providers/:type/:id/reactivate')
+  @ApiOperation({ summary: 'Reactivate a deactivated hotel or airline' })
+  @ApiParam({ name: 'type', enum: ProviderType })
+  @ApiParam({ name: 'id', description: 'Hotel or airline MongoDB ObjectId' })
+  @ApiResponse({ status: 200, description: 'Provider reactivated.' })
+  @ApiResponse({ status: 400, description: 'Invalid type or id.' })
+  @ApiResponse({ status: 401, description: 'Authentication is required.' })
+  @ApiResponse({ status: 403, description: 'Administrator role is required.' })
+  @ApiResponse({ status: 404, description: 'Provider not found.' })
+  @ApiResponse({ status: 409, description: 'Provider is already active.' })
+  reactivateProvider(
+    @Param('type', new ParseEnumPipe(ProviderType)) type: ProviderType,
+    @Param('id') id: string,
+    @Body() dto: ProviderStatusDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.administrationService.setProviderActive(type, id, true, dto, req.user.userId);
   }
 }
