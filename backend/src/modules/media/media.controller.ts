@@ -1,7 +1,7 @@
 import {
   BadRequestException,
-  Controller,
   Body,
+  Controller,
   Get,
   Param,
   Post,
@@ -36,24 +36,29 @@ export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Upload private profile media' })
+  @ApiOperation({ summary: 'Upload profile or activity media' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
-    description: 'JPG or PNG profile image up to 5 MB.',
+    description: 'JPG or PNG image up to 5 MB.',
     schema: {
       type: 'object',
       required: ['file', 'targetType'],
       properties: {
         file: { type: 'string', format: 'binary' },
-        targetType: { type: 'string', enum: ['profile'], example: 'profile' },
-        targetId: { type: 'string', description: 'Authenticated owner MongoDB ObjectId.' },
+        targetType: {
+          type: 'string',
+          enum: ['profile', 'activity'],
+        },
+        targetId: {
+          type: 'string',
+          description: 'Activity MongoDB ObjectId; required for activity images.',
+        },
       },
     },
   })
   @ApiResponse({ status: 201, description: 'Media uploaded successfully.' })
-  @ApiResponse({ status: 400, description: 'Missing, oversized, malformed, or unsupported image.' })
+  @ApiResponse({ status: 400, description: 'Invalid or unsupported image.' })
   @ApiResponse({ status: 401, description: 'Authentication is required.' })
-  @ApiResponse({ status: 501, description: 'Non-profile media integration is pending ownership contracts.' })
   @UseInterceptors(
     FileInterceptor('file', {
       limits: { fileSize: 5 * 1024 * 1024, files: 1 },
@@ -80,21 +85,28 @@ export class MediaController {
   )
   upload(
     @Req() request: AuthenticatedRequest,
-    @UploadedFile() file: {
-      originalname: string;
-      mimetype: string;
-      size: number;
-      buffer: Buffer;
-    } | undefined,
+    @UploadedFile()
+    file:
+      | {
+          originalname: string;
+          mimetype: string;
+          size: number;
+          buffer: Buffer;
+        }
+      | undefined,
     @Body() dto: UploadMediaDto,
   ) {
     return this.mediaService.upload(request.user.userId, dto, file);
   }
 
   @Get(':id/content')
-  @ApiOperation({ summary: 'Retrieve owner-scoped private media content' })
-  @ApiParam({ name: 'id', description: 'Media MongoDB ObjectId', example: '507f1f77bcf86cd799439011' })
-  @ApiResponse({ status: 200, description: 'Image bytes returned with its validated media type.' })
+  @ApiOperation({ summary: 'Retrieve owner-scoped media content' })
+  @ApiParam({
+    name: 'id',
+    description: 'Media MongoDB ObjectId',
+    example: '507f1f77bcf86cd799439011',
+  })
+  @ApiResponse({ status: 200, description: 'Image bytes returned.' })
   @ApiResponse({ status: 401, description: 'Authentication is required.' })
   @ApiResponse({ status: 404, description: 'Media not found or not accessible.' })
   async getContent(
@@ -106,6 +118,7 @@ export class MediaController {
       request.user.userId,
       mediaId,
     );
+
     response.setHeader('Content-Type', content.mimeType);
     response.setHeader(
       'Content-Disposition',
