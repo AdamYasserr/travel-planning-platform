@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import {
   ApiCookieAuth,
   ApiOperation,
@@ -12,6 +21,11 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { CreateModeratorDto } from './dto/create-moderator.dto';
 import { QueryAccountsDto } from './dto/query-accounts.dto';
+import { SuspendAccountDto } from './dto/suspend-account.dto';
+
+interface AuthenticatedRequest {
+  user: { userId: string };
+}
 
 @Controller('admin')
 @Roles(UserRole.ADMIN)
@@ -30,8 +44,11 @@ export class AdministrationController {
   @ApiResponse({ status: 401, description: 'Authentication is required.' })
   @ApiResponse({ status: 403, description: 'Administrator role is required.' })
   @ApiResponse({ status: 404, description: 'Account not found.' })
-  resetUserPassword(@Param('id') userId: string) {
-    return this.administrationService.resetUserPassword(userId);
+  resetUserPassword(
+    @Param('id') userId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.administrationService.resetUserPassword(userId, req.user.userId);
   }
 
   @Post('moderators')
@@ -41,8 +58,11 @@ export class AdministrationController {
   @ApiResponse({ status: 401, description: 'Authentication is required.' })
   @ApiResponse({ status: 403, description: 'Administrator role is required.' })
   @ApiResponse({ status: 409, description: 'Email is already in use.' })
-  createModerator(@Body() dto: CreateModeratorDto) {
-    return this.administrationService.createModerator(dto);
+  createModerator(
+    @Body() dto: CreateModeratorDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.administrationService.createModerator(dto, req.user.userId);
   }
 
   @Get('accounts')
@@ -52,5 +72,39 @@ export class AdministrationController {
   @ApiResponse({ status: 403, description: 'Administrator role is required.' })
   listAccounts(@Query() query: QueryAccountsDto) {
     return this.administrationService.listAccounts(query);
+  }
+
+  @Patch('accounts/:id/suspend')
+  @ApiOperation({ summary: 'Suspend a user or moderator account' })
+  @ApiParam({ name: 'id', description: 'Target user MongoDB ObjectId' })
+  @ApiResponse({ status: 200, description: 'Account suspended.' })
+  @ApiResponse({ status: 400, description: 'Invalid id or account cannot be suspended.' })
+  @ApiResponse({ status: 401, description: 'Authentication is required.' })
+  @ApiResponse({ status: 403, description: 'Administrator role is required.' })
+  @ApiResponse({ status: 404, description: 'Account not found.' })
+  @ApiResponse({ status: 409, description: 'Account is already suspended.' })
+  suspendAccount(
+    @Param('id') userId: string,
+    @Body() dto: SuspendAccountDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.administrationService.suspendAccount(userId, dto, req.user.userId);
+  }
+
+  @Patch('accounts/:id/reactivate')
+  @ApiOperation({ summary: 'Reactivate a suspended account' })
+  @ApiParam({ name: 'id', description: 'Target user MongoDB ObjectId' })
+  @ApiResponse({ status: 200, description: 'Account reactivated.' })
+  @ApiResponse({ status: 400, description: 'Invalid account id.' })
+  @ApiResponse({ status: 401, description: 'Authentication is required.' })
+  @ApiResponse({ status: 403, description: 'Administrator role is required.' })
+  @ApiResponse({ status: 404, description: 'Account not found.' })
+  @ApiResponse({ status: 409, description: 'Account is not suspended.' })
+  reactivateAccount(
+    @Param('id') userId: string,
+    @Body() dto: SuspendAccountDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.administrationService.reactivateAccount(userId, dto, req.user.userId);
   }
 }

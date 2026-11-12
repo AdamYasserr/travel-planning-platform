@@ -11,6 +11,7 @@ import { randomBytes } from 'crypto';
 
 import { User, UserDocument } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   CreateModeratorDto,
   ProviderType,
@@ -19,15 +20,17 @@ import {
   AccountStatusFilter,
   QueryAccountsDto,
 } from './dto/query-accounts.dto';
+import { SuspendAccountDto } from './dto/suspend-account.dto';
 
 @Injectable()
 export class AdministrationService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    private readonly auditLogs: AuditLogsService,
   ) {}
 
-  async resetUserPassword(userId: string) {
+  async resetUserPassword(userId: string, actorId: string) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid account id');
     }
@@ -58,6 +61,14 @@ export class AdministrationService {
 
     await user.save();
 
+    await this.auditLogs.record({
+      actorId,
+      action: 'PASSWORD_RESET',
+      targetType: 'user',
+      targetId: user._id.toString(),
+      details: { email: user.email, role: user.role },
+    });
+
     // Return the temporary password only once to the admin.
     // Never log or persist the plaintext password.
     return {
@@ -73,7 +84,7 @@ export class AdministrationService {
     };
   }
 
-  async createModerator(dto: CreateModeratorDto) {
+  async createModerator(dto: CreateModeratorDto, actorId: string) {
     const email = dto.email.toLowerCase().trim();
 
     const existing = await this.userModel.findOne({ email });
@@ -90,6 +101,18 @@ export class AdministrationService {
       hotelId: dto.providerType === ProviderType.HOTEL ? dto.providerId : null,
       airlineId:
         dto.providerType === ProviderType.AIRLINE ? dto.providerId : null,
+    });
+
+    await this.auditLogs.record({
+      actorId,
+      action: 'MODERATOR_CREATED',
+      targetType: 'user',
+      targetId: user._id.toString(),
+      details: {
+        email: user.email,
+        providerType: dto.providerType,
+        providerId: dto.providerId,
+      },
     });
 
     return {
@@ -140,5 +163,77 @@ export class AdministrationService {
     ]);
 
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  async suspendAccount(userId: string, dto: SuspendAccountDto, actorId: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid account id');
+    }
+    if (userId === actorId) {
+      throw new BadRequestException('You cannot suspend your own account');
+    }
+
+    const user = await this.userModel.findById(userId);
+    if (!user) {
+      throw new NotFoundException('Account not found');
+    }
+    if (user.role !== UserRole.USER && user.role !== UserRole.MODERATOR) {
+      throw new BadRequestException(
+        'Only registered user and moderator accounts can be suspended',
+      );
+    }
+    if (user.isSuspended) {
+      throw new ConflictException('Account is already suspended');
+    }
+
+    user.isSuspended = true;
+    // End any existing session so the suspension takes effect immediately.
+    user.refreshTokenHash = null;
+    await user.save();
+
+    await this.auditLogs.record({
+      actorId,
+      action: 'ACCOUNT_SUSPENDED',
+      targetType: 'user',
+      targetId: user._id.toString(),
+      details: { email: user.email, role: user.role, reason: dto.reason ?? null },
+    });
+
+    return {
+      message: 'Account suspended',
+      user: { id: user._id.toString(), email: user.email, isSuspended: true },
+    };
+  }
+
+  async reactivateAccount(userId: string, dto: SuspendAccountDto, actorId: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid account id');
+    }
+
+    const user = await this.userModel.findById(userId);
+    if (!user) {
+      throw new NotFoundException('Account not found');
+    }
+    if (!user.isSuspended) {
+      throw new ConflictException('Account is not suspended');
+    }
+
+    user.isSuspended = false;
+    user.failedLoginAttempts = 0;
+    user.lockUntil = null;
+    await user.save();
+
+    await this.auditLogs.record({
+      actorId,
+      action: 'ACCOUNT_REACTIVATED',
+      targetType: 'user',
+      targetId: user._id.toString(),
+      details: { email: user.email, role: user.role, reason: dto.reason ?? null },
+    });
+
+    return {
+      message: 'Account reactivated',
+      user: { id: user._id.toString(), email: user.email, isSuspended: false },
+    };
   }
 }
