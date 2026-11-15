@@ -29,6 +29,15 @@ import {
 import { User, UserSchema } from '../../users/user.schema';
 
 import { FlightsService } from './flights.service';
+import { FlightSearchService } from './flight-search.service';
+import {
+  BaggagePolicy,
+  BaggagePolicySchema,
+} from '../airlines/schemas/baggage-policy.schema';
+import {
+  CancellationPolicy,
+  CancellationPolicySchema,
+} from '../airlines/schemas/cancellation-policy.schema';
 
 @Module({
   imports: [
@@ -53,6 +62,16 @@ import { FlightsService } from './flights.service';
   name: Airport.name,
   schema: AirportSchema,
 },
+      // Existing airline policy schemas (owned by the airlines module),
+      // registered here so FLT-17 can read them.
+      {
+        name: BaggagePolicy.name,
+        schema: BaggagePolicySchema,
+      },
+      {
+        name: CancellationPolicy.name,
+        schema: CancellationPolicySchema,
+      },
     ]),
   ],
   controllers: [
@@ -61,6 +80,7 @@ import { FlightsService } from './flights.service';
   ],
   providers: [
     FlightsService,
+    FlightSearchService,
     CabinInventoryService,
     FlightStatusService,
   ],

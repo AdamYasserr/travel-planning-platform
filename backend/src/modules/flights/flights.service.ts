@@ -18,6 +18,10 @@ import { Airline } from '../airlines/schemas/airline.schema';
 import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { Airport } from '../airports/schemas/airport.schema';
+import { CabinInventory } from './schemas/cabin-inventory.schema';
+import { BaggagePolicy } from '../airlines/schemas/baggage-policy.schema';
+import { CancellationPolicy } from '../airlines/schemas/cancellation-policy.schema';
+import { formatLocalDateTime } from './utils/local-time.util';
 
 import {
   CreateFlightDto,
@@ -37,7 +41,16 @@ export class FlightsService {
     private readonly userModel: Model<User>,
 
     @InjectModel(Airport.name)
-private readonly airportModel: Model<Airport>,
+    private readonly airportModel: Model<Airport>,
+
+    @InjectModel(CabinInventory.name)
+    private readonly inventoryModel: Model<CabinInventory>,
+
+    @InjectModel(BaggagePolicy.name)
+    private readonly baggagePolicyModel: Model<BaggagePolicy>,
+
+    @InjectModel(CancellationPolicy.name)
+    private readonly cancellationPolicyModel: Model<CancellationPolicy>,
   ) {}
 
   // Check airline management permission
@@ -295,61 +308,169 @@ return this.toLocalFlightResponse(flight);
     );
   }
 
-  async toLocalFlightResponse(flight: HydratedDocument<Flight>) {
-  const airportCodes = [
-    flight.departureAirport,
-    flight.arrivalAirport,
-  ];
+  // FLT-17: Public flight details with airport-local times (GEN-06),
+  // every cabin category, and the airline's baggage and cancellation policies.
+  async findById(flightId: string) {
+    if (!Types.ObjectId.isValid(flightId)) {
+      throw new BadRequestException('Invalid flight ID');
+    }
 
-  const airports = await this.airportModel
-    .find({ iataCode: { $in: airportCodes } })
-    .select({ iataCode: 1, timeZone: 1 })
-    .lean()
-    .exec();
+    const flight = await this.flightModel.findById(flightId).exec();
 
-  const departureAirport = airports.find(
-    (airport) => airport.iataCode === flight.departureAirport,
-  );
-  const arrivalAirport = airports.find(
-    (airport) => airport.iataCode === flight.arrivalAirport,
-  );
+    if (!flight) {
+      throw new NotFoundException('Flight not found');
+    }
 
-  if (!departureAirport || !arrivalAirport) {
-    throw new NotFoundException(
-      'A flight airport or its time zone was not found',
-    );
+    const [airline, cabins, airports, baggagePolicy, cancellationPolicy] =
+      await Promise.all([
+        this.airlineModel
+          .findById(flight.airlineId)
+          .select({ name: 1, code: 1, isActive: 1 })
+          .lean()
+          .exec(),
+        this.inventoryModel
+          .find({ flightId: flight._id })
+          .select({
+            cabinClass: 1,
+            price: 1,
+            currency: 1,
+            availableSeats: 1,
+            freeBagsCount: 1,
+            maxWeightPerBagKg: 1,
+          })
+          .sort({ price: 1 })
+          .lean()
+          .exec(),
+        this.airportModel
+          .find({
+            iataCode: {
+              $in: [flight.departureAirport, flight.arrivalAirport],
+            },
+          })
+          .select({ iataCode: 1, name: 1, city: 1, country: 1, timeZone: 1 })
+          .lean()
+          .exec(),
+        this.baggagePolicyModel
+          .findOne({ airlineId: flight.airlineId })
+          .lean()
+          .exec(),
+        this.cancellationPolicyModel
+          .findOne({ airlineId: flight.airlineId })
+          .lean()
+          .exec(),
+      ]);
+
+    const localFlight = this.buildLocalTimes(flight, airports);
+
+    const airportInfo = (code: string) => {
+      const airport = airports.find((a) => a.iataCode === code);
+      return {
+        iataCode: code,
+        name: airport?.name,
+        city: airport?.city,
+        country: airport?.country,
+      };
+    };
+
+    return {
+      ...flight.toObject(),
+      ...localFlight,
+      departureTime: flight.departureTime.toISOString(),
+      arrivalTime: flight.arrivalTime.toISOString(),
+      durationMinutes: Math.round(
+        (flight.arrivalTime.getTime() - flight.departureTime.getTime()) /
+          60000,
+      ),
+      airline: airline
+        ? { id: airline._id, name: airline.name, code: airline.code }
+        : null,
+      departureAirportDetails: airportInfo(flight.departureAirport),
+      arrivalAirportDetails: airportInfo(flight.arrivalAirport),
+      cabins: cabins.map((cabin) => ({
+        id: cabin._id,
+        cabinClass: cabin.cabinClass,
+        price: cabin.price,
+        currency: cabin.currency,
+        availableSeats: cabin.availableSeats,
+        baggage: {
+          freeBagsCount: cabin.freeBagsCount,
+          maxWeightPerBagKg: cabin.maxWeightPerBagKg,
+        },
+      })),
+      // FLT-08: Extra baggage rules (null if the airline has not set them)
+      baggagePolicy: baggagePolicy
+        ? {
+            carryOnAllowanceKg: baggagePolicy.carryOnAllowanceKg,
+            checkedBaggageAllowanceKg: baggagePolicy.checkedBaggageAllowanceKg,
+            pricePerExtraBag: baggagePolicy.pricePerExtraBag,
+            maxExtraBagsPerPassenger: baggagePolicy.maxExtraBagsPerPassenger,
+            currency: baggagePolicy.currency,
+          }
+        : null,
+      // FLT-09: Cancellation policy (null if the airline has not set it)
+      cancellationPolicy: cancellationPolicy
+        ? {
+            description: cancellationPolicy.description,
+            tiers: [...cancellationPolicy.tiers]
+              .sort((a, b) => b.daysBeforeDeparture - a.daysBeforeDeparture)
+              .map((tier) => ({
+                daysBeforeDeparture: tier.daysBeforeDeparture,
+                refundPercentage: tier.refundPercentage,
+              })),
+          }
+        : null,
+      isBookable:
+        flight.status === FlightStatus.SCHEDULED &&
+        flight.departureTime > new Date() &&
+        !!airline?.isActive &&
+        cabins.some((cabin) => cabin.availableSeats > 0),
+    };
   }
 
-  const formatLocalDateTime = (date: Date, timeZone: string): string => {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(date);
+  // GEN-06: Airport-local departure/arrival times for a flight
+  private buildLocalTimes(
+    flight: Pick<Flight, 'departureAirport' | 'arrivalAirport' | 'departureTime' | 'arrivalTime'>,
+    airports: { iataCode: string; timeZone: string }[],
+  ) {
+    const departureAirport = airports.find(
+      (airport) => airport.iataCode === flight.departureAirport,
+    );
+    const arrivalAirport = airports.find(
+      (airport) => airport.iataCode === flight.arrivalAirport,
+    );
 
-    const value = (type: Intl.DateTimeFormatPartTypes) =>
-      parts.find((part) => part.type === type)?.value ?? '';
+    if (!departureAirport || !arrivalAirport) {
+      throw new NotFoundException(
+        'A flight airport or its time zone was not found',
+      );
+    }
 
-    return `${value('year')}-${value('month')}-${value('day')}T${value('hour')}:${value('minute')}:${value('second')}`;
-  };
+    return {
+      departureTimeLocal: formatLocalDateTime(
+        flight.departureTime,
+        departureAirport.timeZone,
+      ),
+      departureTimeZone: departureAirport.timeZone,
+      arrivalTimeLocal: formatLocalDateTime(
+        flight.arrivalTime,
+        arrivalAirport.timeZone,
+      ),
+      arrivalTimeZone: arrivalAirport.timeZone,
+    };
+  }
 
-  return {
-    ...flight.toObject(),
-    departureTimeLocal: formatLocalDateTime(
-      flight.departureTime,
-      departureAirport.timeZone,
-    ),
-    departureTimeZone: departureAirport.timeZone,
-    arrivalTimeLocal: formatLocalDateTime(
-      flight.arrivalTime,
-      arrivalAirport.timeZone,
-    ),
-    arrivalTimeZone: arrivalAirport.timeZone,
-  };
-}
+  async toLocalFlightResponse(flight: HydratedDocument<Flight>) {
+    const airports = await this.airportModel
+      .find({
+        iataCode: { $in: [flight.departureAirport, flight.arrivalAirport] },
+      })
+      .select({ iataCode: 1, timeZone: 1 })
+      .lean()
+      .exec();
+
+    return {
+      ...flight.toObject(),
+      ...this.buildLocalTimes(flight, airports),
+    };
+  }
 }
