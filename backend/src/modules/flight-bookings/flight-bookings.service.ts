@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -7,6 +8,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { randomInt } from 'crypto';
 import { ClientSession, Connection, Model, Types } from 'mongoose';
@@ -20,7 +22,6 @@ import {
   assertTransition,
   FlightBookingStatus,
   FlightCancelledBy,
-  FlightRefundStatus,
   PassengerType,
   SegmentDirection,
 } from './enums/flight-booking-status.enum';
@@ -41,7 +42,12 @@ import {
 import {
   FLIGHT_PAYMENTS_PORT,
 } from './payments/flight-payments.port';
-import type { FlightPaymentsPort } from './payments/flight-payments.port';
+import type {
+  FlightPaymentSummary,
+  FlightPaymentsPort,
+  FlightRefundResult,
+} from './payments/flight-payments.port';
+import { RefundStatus } from '../payments/enums/refund-status.enum';
 
 import { Flight, FlightStatus } from '../flights/schemas/flight.schema';
 import {
@@ -194,7 +200,16 @@ export class FlightBookingsService {
 
     @Inject(FLIGHT_PAYMENTS_PORT)
     private readonly payments: FlightPaymentsPort,
-  ) {}
+
+    private readonly configService: ConfigService,
+  ) {
+    // PAY-04: Platform currency, compared case-insensitively
+    this.platformCurrency = (
+      this.configService.get<string>('payments.currency') || 'egp'
+    ).toLowerCase();
+  }
+
+  private readonly platformCurrency: string;
 
   // ---------------------------------------------------------------------------
   // FLT-19 / FLT-21: Booking summary (validates, reserves nothing, saves nothing)
@@ -392,8 +407,8 @@ export class FlightBookingsService {
     if (!confirmed) {
       // The hold expired or the status changed between the checks
       await this.expireBooking(bookingId, now);
-      // TODO(PAY-03): If payment was taken but the hold expired in between,
-      // the payments module must refund it.
+      // PAY-01: The payments webhook refunds a succeeded payment in full when
+      // its booking ends up Expired.
       throw new ConflictException(
         'Booking could not be confirmed because its hold expired or changed',
       );
@@ -413,6 +428,21 @@ export class FlightBookingsService {
   // FLT-22: Expire one hold and give its seats back (exactly once)
   // ---------------------------------------------------------------------------
   async expireBooking(bookingId: Id, now = new Date()): Promise<boolean> {
+    const expired = await this.expireBookingInTransaction(bookingId, now);
+
+    if (expired) {
+      // PAY-01: Cancel any open PaymentIntent, once, after the commit
+      await this.cancelPendingPaymentsSafely(String(bookingId));
+      // TODO(GEN-01): Notify the user that the hold expired.
+    }
+
+    return expired;
+  }
+
+  private async expireBookingInTransaction(
+    bookingId: Id,
+    now: Date,
+  ): Promise<boolean> {
     return this.connection.transaction(async (session) => {
       // The status-guarded update is the "only once" guard: a second run (or a
       // concurrent job) finds nothing to update and releases nothing.
@@ -540,11 +570,64 @@ export class FlightBookingsService {
   async findMineById(userId: string, bookingId: string, now = new Date()) {
     const booking = await this.loadOwned(userId, bookingId);
 
-    return this.toBookingResponse(
-      booking,
-      await this.loadTimeZones([booking]),
-      now,
-    );
+    const [timeZones, payment] = await Promise.all([
+      this.loadTimeZones([booking]),
+      // PAY-03: Payment and refund status come from the Payment record
+      this.payments.getPaymentSummary(String(booking._id)),
+    ]);
+
+    return this.toBookingResponse(booking, timeZones, now, payment);
+  }
+
+  // ---------------------------------------------------------------------------
+  // PAY-01 / PAY-02 / PAY-04: Used by PaymentsService.createFlightPayment
+  // ---------------------------------------------------------------------------
+  async getPayableBooking(userId: string, bookingId: string, now = new Date()) {
+    const booking = await this.loadOwned(userId, bookingId);
+
+    if (this.isHoldTimeOver(booking, now)) {
+      await this.expireBooking(bookingId, now);
+      throw new ConflictException('The 10-minute seat hold has expired');
+    }
+
+    if (booking.status !== FlightBookingStatus.PENDING_PAYMENT) {
+      throw new ConflictException('This booking is not awaiting payment');
+    }
+
+    // PAY-02: Policies must be accepted before payment
+    if (!booking.policiesAcceptedAt) {
+      throw new ConflictException(
+        'You must accept the booking policies before payment',
+      );
+    }
+
+    // PAY-04: Single platform currency (case-insensitive)
+    if (booking.currency.toLowerCase() !== this.platformCurrency) {
+      throw new ConflictException(
+        `This booking is priced in ${booking.currency}, but payments use ${this.platformCurrency.toUpperCase()}`,
+      );
+    }
+
+    return {
+      id: String(booking._id),
+      totalPrice: booking.totalPrice,
+      currency: booking.currency,
+      holdExpiresAt: booking.holdExpiresAt,
+      policiesAcceptedAt: booking.policiesAcceptedAt,
+    };
+  }
+
+  // Used by the payments webhook to decide between confirm and late refund
+  async getBookingStatus(bookingId: string): Promise<FlightBookingStatus | null> {
+    this.assertObjectId(bookingId, 'booking');
+
+    const booking = await this.bookingModel
+      .findById(bookingId)
+      .select({ status: 1 })
+      .lean<{ status: FlightBookingStatus }>()
+      .exec();
+
+    return booking?.status ?? null;
   }
 
   // ---------------------------------------------------------------------------
@@ -660,6 +743,41 @@ export class FlightBookingsService {
   ) {
     const booking = await this.loadOwned(userId, bookingId);
 
+    // PAY-03: Retry a failed refund of a cancelled booking. No status change.
+    if (booking.status === FlightBookingStatus.CANCELLED) {
+      const payment = await this.payments.getPaymentSummary(bookingId);
+
+      if (
+        payment?.refundStatus === RefundStatus.FAILED &&
+        (booking.refundAmount ?? 0) > 0
+      ) {
+        if (dto.confirm !== true) {
+          return {
+            preview: true,
+            retryRefund: true,
+            bookingId: booking._id,
+            reference: booking.reference,
+            refundAmount: booking.refundAmount,
+            currency: booking.currency,
+            message: 'The previous refund failed. Send confirm: true to retry it',
+          };
+        }
+
+        await this.requestRefundOrThrow(
+          bookingId,
+          booking.refundAmount as number,
+          'The refund could not be created. The booking stays Cancelled; please try again.',
+        );
+
+        return this.toBookingResponse(
+          booking,
+          await this.loadTimeZones([booking]),
+          now,
+          await this.payments.getPaymentSummary(bookingId),
+        );
+      }
+    }
+
     if (booking.status === FlightBookingStatus.PENDING_PAYMENT) {
       throw new ConflictException(
         'A Pending Payment hold cannot be cancelled; it expires automatically',
@@ -693,6 +811,17 @@ export class FlightBookingsService {
       };
     }
 
+    // PAY-03: Create the refund FIRST. If Stripe fails, nothing changes and
+    // the booking stays Confirmed, so the user can simply try again. Retries
+    // reuse a refund Stripe already created, so money is never refunded twice.
+    if (refund.refundAmount > 0) {
+      await this.requestRefundOrThrow(
+        bookingId,
+        refund.refundAmount,
+        'The refund could not be created. The booking was not changed and is still Confirmed; please try again.',
+      );
+    }
+
     const cancelled = await this.cancelConfirmedBooking(
       booking._id,
       {
@@ -706,17 +835,21 @@ export class FlightBookingsService {
     );
 
     if (!cancelled) {
+      // TODO(ASSUMPTION): The refund exists but the booking changed in between
+      // (e.g. a concurrent cancel already cancelled it). Logged for follow-up.
+      this.logger.error(
+        `Refund requested but booking ${bookingId} could not be cancelled`,
+      );
       throw new ConflictException('The booking can no longer be cancelled');
     }
-
-    const final = await this.requestRefund(cancelled);
 
     // TODO(GEN-01): Notify the user about the cancellation and refund.
 
     return this.toBookingResponse(
-      final,
-      await this.loadTimeZones([final]),
+      cancelled,
+      await this.loadTimeZones([cancelled]),
       now,
+      await this.payments.getPaymentSummary(bookingId),
     );
   }
 
@@ -763,7 +896,10 @@ export class FlightBookingsService {
           return true;
         });
 
-        if (done) expired++;
+        if (done) {
+          expired++;
+          await this.cancelPendingPaymentsSafely(String(booking._id));
+        }
         continue;
       }
 
@@ -1225,6 +1361,19 @@ export class FlightBookingsService {
       );
     }
 
+    // PAY-04: ...and it must be the platform currency (config payments.currency).
+    // Baggage currency only counts when extra bags are bought, because only
+    // then does the baggage policy's price enter the booking.
+    const foreign = [...currencies].filter(
+      (currency) => currency.toLowerCase() !== this.platformCurrency,
+    );
+
+    if (foreign.length > 0) {
+      throw new BadRequestException(
+        `Prices must be in the platform currency ${this.platformCurrency.toUpperCase()} (found ${foreign.join(', ')})`,
+      );
+    }
+
     const fareTotal = round2(
       segments.reduce((sum, s) => sum + s.fare.fareSubtotal, 0),
     );
@@ -1295,10 +1444,8 @@ export class FlightBookingsService {
               cancelledBy: options.cancelledBy,
               refundPercentage: options.refundPercentage,
               refundAmount: options.refundAmount,
-              refundStatus:
-                options.refundAmount > 0
-                  ? FlightRefundStatus.PENDING
-                  : FlightRefundStatus.NOT_APPLICABLE,
+              // PAY-03: Refund status itself lives on the Payment record
+              refundRequestedAt: options.refundAmount > 0 ? now : null,
             },
           },
           { new: true, session },
@@ -1315,47 +1462,61 @@ export class FlightBookingsService {
     });
   }
 
-  // PAY-03: Ask the payments port for the refund after the cancellation is
-  // committed. A failure leaves refundStatus = Pending for a later retry.
-  private async requestRefund(
-    booking: FlightBookingRecord,
-  ): Promise<FlightBookingRecord> {
+  // FLT-06: Airline cancellation refunds after the booking is cancelled (the
+  // flight is gone either way). A failure marks the Payment refund Failed, so
+  // the user can retry with POST /flight-bookings/:id/cancel.
+  private async requestRefund(booking: FlightBookingRecord): Promise<void> {
     if (!booking.refundAmount || booking.refundAmount <= 0) {
-      return booking;
+      return;
     }
 
     try {
-      const result = await this.payments.refund(
-        String(booking._id),
-        booking.refundAmount,
-      );
-
-      if (result.status === 'Processed') {
-        const updated = await this.bookingModel
-          .findOneAndUpdate(
-            { _id: booking._id, status: FlightBookingStatus.CANCELLED },
-            {
-              $set: {
-                refundStatus: FlightRefundStatus.PROCESSED,
-                refundId: result.refundId ?? null,
-              },
-            },
-            { new: true },
-          )
-          .lean<FlightBookingRecord>()
-          .exec();
-
-        return updated ?? booking;
-      }
+      await this.payments.refund(String(booking._id), booking.refundAmount);
     } catch (error) {
-      // TODO(PAY-03): Retry pending refunds once payments are integrated.
       this.logger.error(
         `Refund request failed for flight booking ${String(booking._id)}`,
         error instanceof Error ? error.stack : String(error),
       );
     }
+  }
 
-    return booking;
+  // PAY-03: Request a refund; Stripe errors or a Failed refund become 502 so
+  // the caller's booking stays unchanged and the user can retry.
+  private async requestRefundOrThrow(
+    bookingId: string,
+    amount: number,
+    message: string,
+  ): Promise<FlightRefundResult> {
+    let result: FlightRefundResult;
+
+    try {
+      result = await this.payments.refund(bookingId, amount);
+    } catch (error) {
+      this.logger.error(
+        `Refund request failed for flight booking ${bookingId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw new BadGatewayException(message);
+    }
+
+    if (result.status === 'Failed') {
+      throw new BadGatewayException(message);
+    }
+
+    return result;
+  }
+
+  // PAY-01: Best effort, after the expiry transaction. If it fails, a payment
+  // that still succeeds is refunded in full by the webhook.
+  private async cancelPendingPaymentsSafely(bookingId: string): Promise<void> {
+    try {
+      await this.payments.cancelPendingPayments(bookingId);
+    } catch (error) {
+      this.logger.error(
+        `Could not cancel PaymentIntents of expired flight booking ${bookingId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
   }
 
   private async releaseSeats(
@@ -1636,6 +1797,7 @@ export class FlightBookingsService {
     booking: FlightBookingRecord,
     timeZones: Map<string, string>,
     now: Date,
+    payment?: FlightPaymentSummary | null,
   ) {
     const passengerCounts = {
       adults: booking.adults,
@@ -1696,7 +1858,10 @@ export class FlightBookingsService {
       cancelledBy: booking.cancelledBy,
       refundPercentage: booking.refundPercentage,
       refundAmount: booking.refundAmount,
-      refundStatus: booking.refundStatus,
+      refundRequestedAt: booking.refundRequestedAt ?? null,
+      // PAY-01 / PAY-03: From the Payment record (single source of truth);
+      // undefined where the caller did not load it.
+      payment,
       createdAt: booking.createdAt,
     };
   }

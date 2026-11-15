@@ -4,11 +4,17 @@ import {
 
   ConflictException,
 
+  Inject,
+
   Injectable,
+
+  Logger,
 
   NotFoundException,
 
   UnauthorizedException,
+
+  forwardRef,
 
 } from '@nestjs/common';
 
@@ -37,6 +43,9 @@ import {
 
 } from '../hotel-bookings/schemas/hotel-booking.schema';
 
+import { FlightBookingsService } from '../flight-bookings/flight-bookings.service';
+import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
+
 @Injectable()
 
 export class PaymentsService {
@@ -56,6 +65,10 @@ export class PaymentsService {
     @InjectModel(HotelBooking.name)
 
     private readonly bookingModel: Model<HotelBooking>,
+
+    // FLT-23: The booking service owns flight status, reference and seats
+    @Inject(forwardRef(() => FlightBookingsService))
+    private readonly flightBookingsService: FlightBookingsService,
 
   ) {
 
@@ -440,7 +453,14 @@ export class PaymentsService {
 
         const intent = event.data.object as Stripe.PaymentIntent;
 
-        await this.confirmHotelPayment(intent);
+        // FLT-23: Flight intents carry bookingType 'flight' in metadata we set
+        // ourselves (the event signature is already verified). Everything
+        // else keeps the existing hotel path.
+        if (intent.metadata?.bookingType === 'flight') {
+          await this.confirmFlightPayment(intent);
+        } else {
+          await this.confirmHotelPayment(intent);
+        }
 
         break;
 
@@ -1021,6 +1041,427 @@ export class PaymentsService {
       );
     }
 
+  }
+
+  // ===========================================================================
+  // FLT-23 / FLT-26 / PAY-01..04: Flight payments.
+  // Everything below is flight-only; the hotel methods above are unchanged.
+  // The flight booking service owns status transitions, reference and seats.
+  // ===========================================================================
+
+  private readonly flightLogger = new Logger('FlightPayments');
+
+  // PAY-01 / PAY-02 / PAY-04: Create or reuse a flight PaymentIntent. Calling
+  // it again is the retry, until the hold expires.
+  async createFlightPayment(userId: string, bookingId: string) {
+    // Owner, Pending Payment, live hold, accepted policies and platform
+    // currency are all checked by the booking service.
+    const booking = await this.flightBookingsService.getPayableBooking(
+      userId,
+      bookingId,
+    );
+
+    // PAY-04: Checked again here, case-insensitively
+    if (booking.currency.toLowerCase() !== this.currency.toLowerCase()) {
+      throw new ConflictException(
+        'The booking currency does not match the platform payment currency',
+      );
+    }
+
+    const amountInMinorUnits = Math.round(booking.totalPrice * 100);
+
+    if (amountInMinorUnits < 1) {
+      throw new BadRequestException('Invalid payment amount');
+    }
+
+    const flightBookingId = new Types.ObjectId(bookingId);
+
+    // Never start a second payment for a booking that is already paid
+    const alreadyPaid = await this.paymentModel
+      .findOne({
+        flightBookingId,
+        status: { $in: [PaymentStatus.SUCCEEDED, PaymentStatus.REFUNDED] },
+      })
+      .exec();
+
+    if (alreadyPaid) {
+      throw new ConflictException(
+        'Payment has already succeeded. Waiting for confirmation.',
+      );
+    }
+
+    const response = (paymentIntentId: string, clientSecret: string | null) => ({
+      paymentIntentId,
+      clientSecret,
+      amount: booking.totalPrice,
+      currency: this.currency,
+      holdExpiresAt: booking.holdExpiresAt,
+      policiesAcceptedAt: booking.policiesAcceptedAt,
+    });
+
+    // Retry: reuse the latest open PaymentIntent
+    const existingPayment = await this.paymentModel
+      .findOne({
+        flightBookingId,
+        status: { $in: [PaymentStatus.PENDING, PaymentStatus.FAILED] },
+      })
+      .sort({ createdAt: -1 })
+      .exec();
+
+    if (existingPayment) {
+      const existingIntent = await this.stripe.paymentIntents.retrieve(
+        existingPayment.stripePaymentIntentId,
+      );
+
+      if (existingIntent.status === 'succeeded') {
+        throw new ConflictException(
+          'Payment has already succeeded. Waiting for confirmation.',
+        );
+      }
+
+      if (
+        existingIntent.status !== 'canceled' &&
+        existingIntent.amount === amountInMinorUnits
+      ) {
+        await this.paymentModel
+          .updateOne(
+            { _id: existingPayment._id },
+            { $set: { status: PaymentStatus.PENDING } },
+          )
+          .exec();
+
+        return response(existingIntent.id, existingIntent.client_secret);
+      }
+    }
+
+    const paymentIntent = await this.stripe.paymentIntents.create(
+      {
+        amount: amountInMinorUnits,
+        currency: this.currency,
+        automatic_payment_methods: { enabled: true },
+        metadata: {
+          bookingId,
+          userId,
+          bookingType: 'flight',
+        },
+      },
+      {
+        idempotencyKey: `flight-booking-${bookingId}-${randomBytes(8).toString('hex')}`,
+      },
+    );
+
+    // PAY-01: Only the Stripe payment ID, amount, currency and status
+    await this.paymentModel.create({
+      userId: new Types.ObjectId(userId),
+      bookingType: 'flight',
+      flightBookingId,
+      stripePaymentIntentId: paymentIntent.id,
+      amount: booking.totalPrice,
+      currency: this.currency,
+      status: PaymentStatus.PENDING,
+    });
+
+    return response(paymentIntent.id, paymentIntent.client_secret);
+  }
+
+  // FLT-23: payment_intent.succeeded for a flight booking (signature verified)
+  private async confirmFlightPayment(intent: Stripe.PaymentIntent) {
+    const payment = await this.paymentModel
+      .findOne({ stripePaymentIntentId: intent.id })
+      .exec();
+
+    if (!payment) {
+      throw new NotFoundException('Payment record not found');
+    }
+
+    if (
+      payment.bookingType !== 'flight' ||
+      !payment.flightBookingId ||
+      intent.metadata?.bookingId !== payment.flightBookingId.toString()
+    ) {
+      throw new BadRequestException(
+        'Stripe payment does not match a flight booking',
+      );
+    }
+
+    if (
+      intent.amount !== Math.round(payment.amount * 100) ||
+      intent.currency.toLowerCase() !== payment.currency.toLowerCase()
+    ) {
+      throw new BadRequestException(
+        'Stripe payment amount or currency does not match the booking',
+      );
+    }
+
+    // Already refunded: nothing more to do
+    if (payment.status === PaymentStatus.REFUNDED) {
+      return;
+    }
+
+    const bookingId = payment.flightBookingId.toString();
+
+    if (payment.status !== PaymentStatus.SUCCEEDED) {
+      // Status-guarded: a concurrent duplicate delivery finds nothing to update
+      const marked = await this.paymentModel
+        .findOneAndUpdate(
+          {
+            _id: payment._id,
+            status: { $in: [PaymentStatus.PENDING, PaymentStatus.FAILED] },
+          },
+          { $set: { status: PaymentStatus.SUCCEEDED } },
+          { new: true },
+        )
+        .exec();
+
+      if (!marked) {
+        return;
+      }
+    }
+
+    const finished = [
+      FlightBookingStatus.CONFIRMED,
+      FlightBookingStatus.COMPLETED,
+      FlightBookingStatus.CANCELLED,
+    ];
+
+    // Duplicate delivery after a successful confirmation
+    const before = await this.flightBookingsService.getBookingStatus(bookingId);
+
+    if (before && finished.includes(before)) {
+      return;
+    }
+
+    if (before === FlightBookingStatus.PENDING_PAYMENT) {
+      try {
+        // Booking service: Pending -> Confirmed, reference, seats kept
+        await this.flightBookingsService.confirmBooking(bookingId);
+        return;
+      } catch (error) {
+        if (!(error instanceof ConflictException)) {
+          throw error;
+        }
+      }
+    }
+
+    // Re-check: a concurrent delivery may have confirmed it in between
+    const after = await this.flightBookingsService.getBookingStatus(bookingId);
+
+    if (after && finished.includes(after)) {
+      return;
+    }
+
+    // PAY-01: The hold expired before the payment succeeded -> full refund.
+    // The booking stays Expired.
+    const refund = await this.stripe.refunds.create(
+      {
+        payment_intent: intent.id,
+        metadata: { bookingId, bookingType: 'flight', reason: 'hold_expired' },
+      },
+      { idempotencyKey: `flight-late-payment-refund-${intent.id}` },
+    );
+
+    await this.paymentModel
+      .updateOne(
+        { _id: payment._id },
+        {
+          $set: {
+            stripeRefundId: refund.id,
+            refundStatus: this.toRefundStatus(refund.status),
+            ...(refund.status === 'succeeded'
+              ? { status: PaymentStatus.REFUNDED }
+              : {}),
+          },
+        },
+      )
+      .exec();
+
+    // TODO(GEN-01): Notify the user that the late payment was refunded.
+  }
+
+  // FLT-23: Used by the booking service before it confirms
+  async verifyFlightPayment(bookingId: string) {
+    const payment = await this.paymentModel
+      .findOne({
+        flightBookingId: new Types.ObjectId(bookingId),
+        status: PaymentStatus.SUCCEEDED,
+      })
+      .sort({ createdAt: -1 })
+      .exec();
+
+    return {
+      succeeded: !!payment,
+      paymentId: payment?.stripePaymentIntentId,
+    };
+  }
+
+  // FLT-26 / FLT-06 / PAY-03: Refund a flight payment (partial or full).
+  async refundFlightPayment(
+    bookingId: string,
+    amount: number,
+  ): Promise<{ status: 'Refunded' | 'Pending' | 'Failed'; refundId?: string }> {
+    const payment = await this.paymentModel
+      .findOne({
+        flightBookingId: new Types.ObjectId(bookingId),
+        status: { $in: [PaymentStatus.SUCCEEDED, PaymentStatus.REFUNDED] },
+      })
+      .sort({ createdAt: -1 })
+      .exec();
+
+    if (!payment) {
+      throw new ConflictException(
+        'No successful payment was found for this booking',
+      );
+    }
+
+    if (payment.refundStatus === RefundStatus.REFUNDED) {
+      return { status: 'Refunded', refundId: payment.stripeRefundId };
+    }
+
+    const amountInMinorUnits = Math.round(amount * 100);
+
+    if (
+      amountInMinorUnits < 1 ||
+      amountInMinorUnits > Math.round(payment.amount * 100)
+    ) {
+      throw new BadRequestException('Invalid refund amount');
+    }
+
+    try {
+      // Reuse a refund Stripe already created for this booking (for example
+      // when an earlier call timed out), so a retry never refunds twice.
+      const existing = await this.stripe.refunds.list({
+        payment_intent: payment.stripePaymentIntentId,
+        limit: 20,
+      });
+
+      let refund = existing.data.find(
+        (candidate) =>
+          candidate.metadata?.bookingId === bookingId &&
+          candidate.status !== 'failed' &&
+          candidate.status !== 'canceled',
+      );
+
+      if (!refund) {
+        refund = await this.stripe.refunds.create(
+          {
+            payment_intent: payment.stripePaymentIntentId,
+            amount: amountInMinorUnits,
+            metadata: { bookingId, bookingType: 'flight' },
+          },
+          {
+            idempotencyKey: `flight-refund-${bookingId}-${amountInMinorUnits}-${payment.stripeRefundId ?? 'initial'}`,
+          },
+        );
+      }
+
+      const refundStatus = this.toRefundStatus(refund.status);
+
+      await this.paymentModel
+        .updateOne(
+          { _id: payment._id },
+          {
+            $set: {
+              stripeRefundId: refund.id,
+              refundStatus,
+              ...(refundStatus === RefundStatus.REFUNDED &&
+              refund.amount >= Math.round(payment.amount * 100)
+                ? { status: PaymentStatus.REFUNDED }
+                : {}),
+            },
+          },
+        )
+        .exec();
+
+      // TODO(GEN-01): Notify the user about the refund.
+
+      return {
+        status:
+          refundStatus === RefundStatus.REFUNDED
+            ? 'Refunded'
+            : refundStatus === RefundStatus.FAILED
+              ? 'Failed'
+              : 'Pending',
+        refundId: refund.id,
+      };
+    } catch (error) {
+      // Mark Failed so the user can retry; the retry reuses any refund Stripe
+      // did create, so it cannot double-refund.
+      await this.paymentModel
+        .updateOne(
+          { _id: payment._id },
+          { $set: { refundStatus: RefundStatus.FAILED } },
+        )
+        .exec();
+
+      throw error;
+    }
+  }
+
+  // PAY-01: Cancel open PaymentIntents of an expired flight booking (best
+  // effort; the webhook refunds any payment that still succeeds).
+  async cancelFlightPaymentIntents(bookingId: string): Promise<void> {
+    const payments = await this.paymentModel
+      .find({
+        flightBookingId: new Types.ObjectId(bookingId),
+        status: { $in: [PaymentStatus.PENDING, PaymentStatus.FAILED] },
+      })
+      .exec();
+
+    for (const payment of payments) {
+      try {
+        const intent = await this.stripe.paymentIntents.retrieve(
+          payment.stripePaymentIntentId,
+        );
+
+        if (intent.status === 'succeeded') continue;
+
+        const cancelled =
+          intent.status === 'canceled'
+            ? intent
+            : await this.stripe.paymentIntents.cancel(intent.id);
+
+        if (cancelled.status === 'canceled') {
+          await this.paymentModel
+            .updateOne(
+              { _id: payment._id },
+              { $set: { status: PaymentStatus.CANCELLED } },
+            )
+            .exec();
+        }
+      } catch (error) {
+        this.flightLogger.error(
+          `Could not cancel PaymentIntent for flight booking ${bookingId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+  }
+
+  // PAY-01 / PAY-03: Latest payment of a flight booking, for booking details
+  async getFlightPaymentSummary(bookingId: string) {
+    const payment = await this.paymentModel
+      .findOne({ flightBookingId: new Types.ObjectId(bookingId) })
+      .sort({ createdAt: -1 })
+      .exec();
+
+    if (!payment) {
+      return null;
+    }
+
+    return {
+      paymentIntentId: payment.stripePaymentIntentId,
+      status: payment.status,
+      amount: payment.amount,
+      currency: payment.currency,
+      refundStatus: payment.refundStatus ?? null,
+      refundId: payment.stripeRefundId ?? null,
+    };
+  }
+
+  private toRefundStatus(status: string | null): RefundStatus {
+    if (status === 'succeeded') return RefundStatus.REFUNDED;
+    if (status === 'failed' || status === 'canceled') return RefundStatus.FAILED;
+    return RefundStatus.PENDING;
   }
 
 }

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import {
@@ -13,8 +13,9 @@ import {
 import { FlightBookingExpiryService } from './flight-booking-expiry.service';
 import {
   FLIGHT_PAYMENTS_PORT,
-  PendingFlightPaymentsAdapter,
+  StripeFlightPaymentsAdapter,
 } from './payments/flight-payments.port';
+import { PaymentsModule } from '../payments/payments.module';
 
 // FlightsModule exports its Mongoose models (Flight, CabinInventory, Airline,
 // Airport, User, BaggagePolicy, CancellationPolicy), so none are re-registered.
@@ -26,6 +27,9 @@ import { FlightsModule } from '../flights/flights.module';
     MongooseModule.forFeature([
       { name: FlightBooking.name, schema: FlightBookingSchema },
     ]),
+    // FLT-23: Payments confirms flight bookings; flight bookings refunds and
+    // cancels through payments. The cycle is resolved with forwardRef.
+    forwardRef(() => PaymentsModule),
   ],
   controllers: [
     FlightBookingsController,
@@ -34,10 +38,10 @@ import { FlightsModule } from '../flights/flights.module';
   providers: [
     FlightBookingsService,
     FlightBookingExpiryService,
-    // TODO(PAY-01): Swap for the Stripe-backed adapter when payments support flights
+    // PAY-01 / PAY-03: Stripe through the shared PaymentsService
     {
       provide: FLIGHT_PAYMENTS_PORT,
-      useClass: PendingFlightPaymentsAdapter,
+      useClass: StripeFlightPaymentsAdapter,
     },
   ],
   exports: [FlightBookingsService],
