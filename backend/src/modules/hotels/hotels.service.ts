@@ -1,903 +1,1764 @@
 import {
+
   BadRequestException,
+
   ConflictException,
+
   ForbiddenException,
+
   Injectable,
+
   NotFoundException,
+
 } from '@nestjs/common';
+
 import { InjectModel } from '@nestjs/mongoose';
+
 import { Model, Types } from 'mongoose';
 
 import {
+
   CreateHotelDto,
+
   CreateRoomDto,
+
   UpdateHotelDto,
+
   UpdateRoomDto,
+
   SetRoomAvailabilityDto,
+
   BlockRoomDto,
+
   RoomStatusQueryDto,
+
   HotelDetailsQueryDto,
+  SearchHotelsQueryDto,
+  HotelAvailabilityQueryDto,
+
 } from './dto/hotels.dto';
+
 import { Hotel } from './schemas/hotel.schema';
+
 import { Room } from './schemas/room.schema';
+
 import { User } from '../../users/user.schema';
+
 import { UserRole } from '../../common/enums/user-role.enum';
+
 import { Review } from './schemas/review.schema';
+
 import {
+
   HotelBooking,
+
   HotelBookingStatus,
+
 } from '../hotel-bookings/schemas/hotel-booking.schema';
 
 @Injectable()
+
 export class HotelsService {
+
   constructor(
+
     @InjectModel(Hotel.name)
+
     private readonly hotelModel: Model<Hotel>,
+
     @InjectModel(User.name)
+
     private readonly userModel: Model<User>,
+
     @InjectModel(Room.name)
+
     private readonly roomModel: Model<Room>,
+
     @InjectModel(HotelBooking.name)
+
     private readonly hotelBookingModel: Model<HotelBooking>,
+
     @InjectModel(Review.name)
+
     private readonly reviewModel: Model<Review>,
+
   ) {}
 
   async create(dto: CreateHotelDto) {
+
     if (
+
       !Types.ObjectId.isValid(dto.cityId) ||
+
       !Types.ObjectId.isValid(dto.countryId)
+
     ) {
+
       throw new BadRequestException('Invalid city or country ID');
+
     }
 
     return this.hotelModel.create({
+
       ...dto,
+
       cityId: new Types.ObjectId(dto.cityId),
+
       countryId: new Types.ObjectId(dto.countryId),
+
       isActive: true,
+
     });
+
   }
 
   async update(
+
     hotelId: string,
+
     dto: UpdateHotelDto,
+
     userId: string,
+
   ) {
+
     if (!Types.ObjectId.isValid(hotelId)) {
+
       throw new BadRequestException('Invalid hotel ID');
+
     }
 
     if (Object.keys(dto).length === 0) {
+
       throw new BadRequestException(
+
         'Provide at least one hotel field to update',
+
       );
+
     }
 
     const user = await this.userModel.findById(userId).exec();
+
     const normalizedHotelId = new Types.ObjectId(hotelId).toString();
 
     const assignedHotelId =
+
       user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
         ? new Types.ObjectId(user.hotelId).toString()
+
         : null;
 
     if (
+
       !user ||
+
       user.role !== UserRole.MODERATOR ||
+
       assignedHotelId !== normalizedHotelId
+
     ) {
+
       throw new ForbiddenException(
+
         'You can only edit the hotel assigned to your account',
+
       );
+
     }
 
     const updateData: Partial<Hotel> = {
+
       ...dto,
+
     } as Partial<Hotel>;
 
     if (dto.cityId) {
+
       updateData.cityId = new Types.ObjectId(dto.cityId);
+
     }
 
     if (dto.countryId) {
+
       updateData.countryId = new Types.ObjectId(dto.countryId);
+
     }
 
     const updatedHotel = await this.hotelModel
+
       .findByIdAndUpdate(
+
         normalizedHotelId,
+
         { $set: updateData },
+
         { new: true, runValidators: true },
+
       )
+
       .exec();
 
     if (!updatedHotel) {
+
       throw new NotFoundException('Hotel not found');
+
     }
 
     return updatedHotel;
+
   }
 
   async updateRoom(
+
     hotelId: string,
+
     roomId: string,
+
     dto: UpdateRoomDto,
+
     userId: string,
+
   ) {
+
     if (
+
       !Types.ObjectId.isValid(hotelId) ||
+
       !Types.ObjectId.isValid(roomId)
+
     ) {
+
       throw new BadRequestException('Invalid hotel or room ID');
+
     }
 
     if (Object.keys(dto).length === 0) {
+
       throw new BadRequestException(
+
         'Provide at least one room field to update',
+
       );
+
     }
 
     const normalizedHotelId = new Types.ObjectId(hotelId).toString();
+
     const user = await this.userModel.findById(userId).exec();
 
     const assignedHotelId =
+
       user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
         ? new Types.ObjectId(user.hotelId).toString()
+
         : null;
 
     if (
+
       !user ||
+
       user.role !== UserRole.MODERATOR ||
+
       assignedHotelId !== normalizedHotelId
+
     ) {
+
       throw new ForbiddenException(
+
         'You can only update rooms in the hotel assigned to your account',
+
       );
+
     }
 
     const updatedRoom = await this.roomModel
+
       .findOneAndUpdate(
+
         {
+
           _id: new Types.ObjectId(roomId),
+
           hotelId: new Types.ObjectId(normalizedHotelId),
+
         },
+
         { $set: dto },
+
         { new: true, runValidators: true },
+
       )
+
       .exec();
 
     if (!updatedRoom) {
+
       throw new NotFoundException('Room not found in this hotel');
+
     }
 
     return updatedRoom;
+
   }
 
   async createRoom(
+
     hotelId: string,
+
     dto: CreateRoomDto,
+
     userId: string,
+
   ) {
+
     if (!Types.ObjectId.isValid(hotelId)) {
+
       throw new BadRequestException('Invalid hotel ID');
+
     }
 
     const normalizedHotelId = new Types.ObjectId(hotelId).toString();
+
     const user = await this.userModel.findById(userId).exec();
 
     const assignedHotelId =
+
       user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
         ? new Types.ObjectId(user.hotelId).toString()
+
         : null;
 
     if (
+
       !user ||
+
       user.role !== UserRole.MODERATOR ||
+
       assignedHotelId !== normalizedHotelId
+
     ) {
+
       throw new ForbiddenException(
+
         'You can only add rooms to the hotel assigned to your account',
+
       );
+
     }
 
     const hotel = await this.hotelModel.findById(normalizedHotelId).exec();
 
     if (!hotel) {
+
       throw new NotFoundException('Hotel not found');
+
     }
 
     const availabilityRanges =
+
       dto.availabilityRanges?.map((range) => ({
+
         startDate: new Date(`${range.startDate}T00:00:00.000Z`),
+
         endDate: new Date(`${range.endDate}T00:00:00.000Z`),
+
       })) ?? [];
 
     try {
+
       return await this.roomModel.create({
+
         ...dto,
+
         hotelId: new Types.ObjectId(normalizedHotelId),
+
         availabilityRanges,
+
         isActive: true,
+
       });
+
     } catch (error: unknown) {
+
       if (
+
         typeof error === 'object' &&
+
         error !== null &&
+
         'code' in error &&
+
         (error as { code?: unknown }).code === 11000
+
       ) {
+
         throw new ConflictException(
+
           'A room with this name already exists in this hotel',
+
         );
+
       }
 
       throw error;
+
     }
+
   }
 
   async listRooms(
+
   hotelId: string,
+
   page: number,
+
   userId: string,
+
 ) {
+
   if (!Types.ObjectId.isValid(hotelId)) {
+
     throw new BadRequestException('Invalid hotel ID');
+
   }
 
   const normalizedHotelId = new Types.ObjectId(hotelId).toString();
+
   const user = await this.userModel.findById(userId).exec();
 
   const assignedHotelId =
+
     user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
       ? new Types.ObjectId(user.hotelId).toString()
+
       : null;
 
   if (
+
     !user ||
+
     user.role !== UserRole.MODERATOR ||
+
     assignedHotelId !== normalizedHotelId
+
   ) {
+
     throw new ForbiddenException(
+
       'You can only view rooms for the hotel assigned to your account',
+
     );
+
   }
 
   const hotel = await this.hotelModel.findById(normalizedHotelId).exec();
 
   if (!hotel) {
+
     throw new NotFoundException('Hotel not found');
+
   }
 
   const pageSize = 10;
+
   const filter = {
+
     hotelId: new Types.ObjectId(normalizedHotelId),
+
   };
 
   const [items, totalItems] = await Promise.all([
+
     this.roomModel
+
       .find(filter)
+
       .sort({ name: 1, _id: 1 })
+
       .skip((page - 1) * pageSize)
+
       .limit(pageSize)
+
       .exec(),
+
     this.roomModel.countDocuments(filter).exec(),
+
   ]);
 
   const totalPages = Math.ceil(totalItems / pageSize);
 
   return {
+
     items,
+
     pagination: {
+
       page,
+
       pageSize,
+
       totalItems,
+
       totalPages,
+
       hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1 && totalPages > 0,
+
     },
+
   };
+
 }
 
-async getDetails(
+    /** HTL-11 / HTL-12: Search hotels with enough available rooms for the stay. */
+  async searchHotels(query: SearchHotelsQueryDto) {
+    const startDate = new Date(`${query.checkInDate}T00:00:00.000Z`);
+    const endDate = new Date(`${query.checkOutDate}T00:00:00.000Z`);
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || endDate <= startDate) {
+      throw new BadRequestException('Check-out date must be after check-in date');
+    }
+    if (startDate < today) {
+      throw new BadRequestException('Check-in date cannot be in the past');
+    }
+    if (query.minPrice !== undefined && query.maxPrice !== undefined && query.minPrice > query.maxPrice) {
+      throw new BadRequestException('Minimum price cannot exceed maximum price');
+    }
+
+    const hotelFilter: Record<string, unknown> = { isActive: true };
+    if (query.cityId) {
+      if (!Types.ObjectId.isValid(query.cityId)) throw new BadRequestException('Invalid city ID');
+      hotelFilter.cityId = new Types.ObjectId(query.cityId);
+    }
+    if (query.countryId) {
+      if (!Types.ObjectId.isValid(query.countryId)) throw new BadRequestException('Invalid country ID');
+      hotelFilter.countryId = new Types.ObjectId(query.countryId);
+    }
+
+    const hotels = await this.hotelModel.find(hotelFilter).sort({ name: 1 }).exec();
+    if (!hotels.length) return { total: 0, hotels: [] };
+
+    const now = new Date();
+    const results: Array<Record<string, any>> = [];
+    const nights = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
+
+    for (const hotel of hotels) {
+      const rooms = await this.roomModel.find({ hotelId: hotel._id, isActive: true }).sort({ pricePerNight: 1, name: 1 }).exec();
+      if (!rooms.length) continue;
+
+      const bookings = await this.hotelBookingModel.find({
+        'rooms.roomId': { $in: rooms.map((room) => room._id) },
+        checkInDate: { $lt: endDate },
+        checkOutDate: { $gt: startDate },
+        $or: [
+          { status: HotelBookingStatus.CONFIRMED },
+          { status: HotelBookingStatus.PENDING_PAYMENT, holdExpiresAt: { $gt: now } },
+          { status: HotelBookingStatus.PENDING_PAYMENT, holdExpiresAt: null },
+        ],
+      }).select({ rooms: 1 }).lean().exec();
+
+      const occupied = new Set(bookings.flatMap((booking) =>
+        booking.rooms.map((bookingRoom) => bookingRoom.roomId.toString()),
+      ));
+      const availableRooms = rooms.filter((room) => {
+        const overlapsBlocked = (room.blockedRanges ?? []).some((range) =>
+          new Date(range.startDate).getTime() < endDate.getTime() &&
+          new Date(range.endDate).getTime() > startDate.getTime(),
+        );
+        return !occupied.has(room._id.toString()) && !overlapsBlocked &&
+          this.isStayCoveredByRanges(room.availabilityRanges, startDate, endDate);
+      });
+
+      const requestedRoomCount = query.rooms ?? 1;
+      if (availableRooms.length < requestedRoomCount) continue;
+
+      // Select the requested number of rooms with the greatest combined capacity.
+      const qualifyingRooms = [...availableRooms]
+        .sort((a, b) => b.maxOccupancy - a.maxOccupancy)
+        .slice(0, requestedRoomCount);
+      const capacity = qualifyingRooms.reduce((sum, room) => sum + room.maxOccupancy, 0);
+      if (capacity < query.guests) continue;
+
+      const cheapestNightlyPrice = Math.min(...qualifyingRooms.map((room) => room.pricePerNight));
+      if (query.minPrice !== undefined && cheapestNightlyPrice < query.minPrice) continue;
+      if (query.maxPrice !== undefined && cheapestNightlyPrice > query.maxPrice) continue;
+
+      const reviews = await this.reviewModel.find({ hotelId: hotel._id }).select({ rating: 1 }).lean().exec();
+      const averageRating = reviews.length
+        ? Number((reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length).toFixed(2))
+        : null;
+      if (query.minRating !== undefined && (averageRating === null || averageRating < query.minRating)) continue;
+
+      results.push({
+        ...hotel.toObject(),
+        averageRating,
+        cheapestNightlyPrice,
+        estimatedMinimumStayPrice: cheapestNightlyPrice * nights,
+        availableRoomCount: availableRooms.length,
+        totalAvailableCapacity: capacity,
+      });
+    }
+
+    const direction = query.sortOrder === 'desc' ? -1 : 1;
+    results.sort((a, b) => {
+      const aValue = query.sortBy === 'rating' ? (a.averageRating ?? -1) : a.cheapestNightlyPrice;
+      const bValue = query.sortBy === 'rating' ? (b.averageRating ?? -1) : b.cheapestNightlyPrice;
+      return (aValue - bValue) * direction || String(a.name).localeCompare(String(b.name));
+    });
+
+    return { total: results.length, checkInDate: query.checkInDate, checkOutDate: query.checkOutDate, guests: query.guests, roomsRequested: query.rooms ?? 1, hotels: results };
+  }
+
+  /** HTL-15: Return each room that is free for the complete requested stay. */
+  async getAvailableRooms(hotelId: string, query: HotelAvailabilityQueryDto) {
+    if (!Types.ObjectId.isValid(hotelId)) throw new BadRequestException('Invalid hotel ID');
+    const hotelObjectId = new Types.ObjectId(hotelId);
+    const hotel = await this.hotelModel.findOne({ _id: hotelObjectId, isActive: true }).exec();
+    if (!hotel) throw new NotFoundException('Hotel not found');
+
+    const startDate = new Date(`${query.checkInDate}T00:00:00.000Z`);
+    const endDate = new Date(`${query.checkOutDate}T00:00:00.000Z`);
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || endDate <= startDate) {
+      throw new BadRequestException('Check-out date must be after check-in date');
+    }
+    if (startDate < today) throw new BadRequestException('Check-in date cannot be in the past');
+
+    const rooms = await this.roomModel.find({ hotelId: hotelObjectId, isActive: true }).sort({ pricePerNight: 1, name: 1 }).exec();
+    const now = new Date();
+    const bookings = rooms.length ? await this.hotelBookingModel.find({
+      'rooms.roomId': { $in: rooms.map((room) => room._id) },
+      checkInDate: { $lt: endDate },
+      checkOutDate: { $gt: startDate },
+      $or: [
+        { status: HotelBookingStatus.CONFIRMED },
+        { status: HotelBookingStatus.PENDING_PAYMENT, holdExpiresAt: { $gt: now } },
+        { status: HotelBookingStatus.PENDING_PAYMENT, holdExpiresAt: null },
+      ],
+    }).select({ rooms: 1 }).lean().exec() : [];
+
+    const occupied = new Set(bookings.flatMap((booking) => booking.rooms.map((item) => item.roomId.toString())));
+    const nights = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
+    const availableRooms = rooms.filter((room) => {
+      const blocked = (room.blockedRanges ?? []).some((range) =>
+        new Date(range.startDate).getTime() < endDate.getTime() && new Date(range.endDate).getTime() > startDate.getTime(),
+      );
+      return !occupied.has(room._id.toString()) && !blocked &&
+        this.isStayCoveredByRanges(room.availabilityRanges, startDate, endDate);
+    }).map((room) => ({
+      roomId: room._id,
+      name: room.name,
+      type: room.type,
+      beds: room.beds,
+      maxOccupancy: room.maxOccupancy,
+      pricePerNight: room.pricePerNight,
+      totalStayPrice: room.pricePerNight * nights,
+      nights,
+    }));
+
+    return {
+      hotelId: hotel._id,
+      hotelName: hotel.name,
+      checkInDate: query.checkInDate,
+      checkOutDate: query.checkOutDate,
+      guests: query.guests,
+      nights,
+      availableRoomCount: availableRooms.length,
+      availableRooms,
+    };
+  }
+
+  async getDetails(
+
   hotelId: string,
+
   query: HotelDetailsQueryDto,
+
 ) {
+
   if (!Types.ObjectId.isValid(hotelId)) {
+
     throw new BadRequestException('Invalid hotel ID');
+
   }
 
   const hotelObjectId = new Types.ObjectId(hotelId);
 
   const hotel = await this.hotelModel
+
     .findOne({ _id: hotelObjectId, isActive: true })
+
     .exec();
 
   if (!hotel) {
+
     throw new NotFoundException('Hotel not found');
+
   }
 
   const reviews = await this.reviewModel
+
     .find({ hotelId: hotelObjectId })
+
     .sort({ createdAt: -1 })
+
     .lean()
+
     .exec();
 
   const averageRating =
+
     reviews.length === 0
+
       ? null
+
       : Number(
+
           (
+
             reviews.reduce((total, review) => total + review.rating, 0) /
+
             reviews.length
+
           ).toFixed(2),
+
         );
 
   const details = {
+
     ...hotel.toObject(),
+
     averageRating,
+
     reviews,
+
   };
 
   if (!query.checkInDate || !query.checkOutDate) {
+
     return details;
+
   }
 
   const startDate = new Date(`${query.checkInDate}T00:00:00.000Z`);
+
   const endDate = new Date(`${query.checkOutDate}T00:00:00.000Z`);
 
   const rooms = await this.roomModel
+
     .find({ hotelId: hotelObjectId, isActive: true })
+
     .sort({ name: 1, _id: 1 })
+
     .exec();
 
   const now = new Date();
 
   const bookings =
+
     rooms.length === 0
+
       ? []
+
       : await this.hotelBookingModel
+
           .find({
+
             'rooms.roomId': { $in: rooms.map((room) => room._id) },
+
             checkInDate: { $lt: endDate },
+
             checkOutDate: { $gt: startDate },
+
             $or: [
+
               { status: HotelBookingStatus.CONFIRMED },
+
               {
+
                 status: HotelBookingStatus.PENDING_PAYMENT,
+
                 holdExpiresAt: { $gt: now },
+
               },
+
               {
+
                 status: HotelBookingStatus.PENDING_PAYMENT,
+
                 holdExpiresAt: null,
+
               },
+
             ],
+
           })
+
           .select({ rooms: 1 })
+
           .lean()
+
           .exec();
 
   const bookedRoomIds = new Set(
+
     bookings.flatMap((booking) =>
+
       booking.rooms.map((bookingRoom) => bookingRoom.roomId.toString()),
+
     ),
+
   );
 
   const availableRooms = rooms.filter((room) => {
+
     const roomId = room._id.toString();
 
     const overlapsBlockedRange = room.blockedRanges.some(
+
       (range) =>
+
         new Date(range.startDate).getTime() < endDate.getTime() &&
+
         new Date(range.endDate).getTime() > startDate.getTime(),
+
     );
 
     const availableForWholeRange = this.isStayCoveredByRanges(
+
       room.availabilityRanges,
+
       startDate,
+
       endDate,
+
     );
 
     return (
+
       !bookedRoomIds.has(roomId) &&
+
       !overlapsBlockedRange &&
+
       availableForWholeRange
+
     );
+
   });
 
   return {
+
     ...details,
+
     availableRooms,
+
   };
+
 }
 
 async setRoomAvailability(
+
   hotelId: string,
+
   roomId: string,
+
   dto: SetRoomAvailabilityDto,
+
   userId: string,
+
 ) {
+
   if (
+
     !Types.ObjectId.isValid(hotelId) ||
+
     !Types.ObjectId.isValid(roomId)
+
   ) {
+
     throw new BadRequestException('Invalid hotel or room ID');
+
   }
 
   const normalizedHotelId = new Types.ObjectId(hotelId).toString();
+
   const user = await this.userModel.findById(userId).exec();
 
   const assignedHotelId =
+
     user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
       ? new Types.ObjectId(user.hotelId).toString()
+
       : null;
 
   if (
+
     !user ||
+
     user.role !== UserRole.MODERATOR ||
+
     assignedHotelId !== normalizedHotelId
+
   ) {
+
     throw new ForbiddenException(
+
       'You can only update availability for rooms in your assigned hotel',
+
     );
+
   }
 
   const roomObjectId = new Types.ObjectId(roomId);
+
   const hotelObjectId = new Types.ObjectId(normalizedHotelId);
 
   const room = await this.roomModel
+
     .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+
     .exec();
 
   if (!room) {
+
     throw new NotFoundException('Room not found in this hotel');
+
   }
 
   const newRanges = dto.availabilityRanges.map((range) => ({
+
     startDate: new Date(`${range.startDate}T00:00:00.000Z`),
+
     endDate: new Date(`${range.endDate}T00:00:00.000Z`),
+
   }));
 
   const confirmedBookings = await this.hotelBookingModel
+
     .find({
+
       'rooms.roomId': roomObjectId,
+
       status: HotelBookingStatus.CONFIRMED,
+
     })
+
     .select({ checkInDate: 1, checkOutDate: 1 })
+
     .lean()
+
     .exec();
 
   const wouldRemoveConfirmedStay = confirmedBookings.some((booking) => {
+
     return !this.isStayCoveredByRanges(
+
       newRanges,
+
       booking.checkInDate,
+
       booking.checkOutDate,
+
     );
+
   });
 
   if (wouldRemoveConfirmedStay) {
+
     throw new ConflictException(
+
       'Availability cannot be removed for dates with a confirmed reservation',
+
     );
+
   }
 
   const updatedRoom = await this.roomModel
+
     .findOneAndUpdate(
+
       { _id: roomObjectId, hotelId: hotelObjectId },
+
       { $set: { availabilityRanges: newRanges } },
+
       { new: true, runValidators: true },
+
     )
+
     .exec();
 
   if (!updatedRoom) {
+
     throw new NotFoundException('Room not found in this hotel');
+
   }
 
   return updatedRoom;
+
 }
 
 private isStayCoveredByRanges(
+
   ranges: Array<{ startDate: Date; endDate: Date }>,
+
   checkInDate: Date,
+
   checkOutDate: Date,
+
 ): boolean {
+
   const sortedRanges = [...ranges].sort(
+
     (a, b) => a.startDate.getTime() - b.startDate.getTime(),
+
   );
 
   let coveredUntil = checkInDate.getTime();
+
   const requiredUntil = checkOutDate.getTime();
 
   for (const range of sortedRanges) {
+
     const start = range.startDate.getTime();
+
     const end = range.endDate.getTime();
 
     if (end <= coveredUntil) {
+
       continue;
+
     }
 
     if (start > coveredUntil) {
+
       return false;
+
     }
 
     coveredUntil = Math.max(coveredUntil, end);
 
     if (coveredUntil >= requiredUntil) {
+
       return true;
+
     }
+
   }
 
   return false;
+
 }
 
 async blockRoomDates(
+
   hotelId: string,
+
   roomId: string,
+
   dto: BlockRoomDto,
+
   userId: string,
+
 ) {
+
   if (
+
     !Types.ObjectId.isValid(hotelId) ||
+
     !Types.ObjectId.isValid(roomId)
+
   ) {
+
     throw new BadRequestException('Invalid hotel or room ID');
+
   }
 
   const normalizedHotelId = new Types.ObjectId(hotelId).toString();
+
   const user = await this.userModel.findById(userId).exec();
 
   const assignedHotelId =
+
     user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
       ? new Types.ObjectId(user.hotelId).toString()
+
       : null;
 
   if (
+
     !user ||
+
     user.role !== UserRole.MODERATOR ||
+
     assignedHotelId !== normalizedHotelId
+
   ) {
+
     throw new ForbiddenException(
+
       'You can only block rooms in the hotel assigned to your account',
+
     );
+
   }
 
   const hotelObjectId = new Types.ObjectId(normalizedHotelId);
+
   const roomObjectId = new Types.ObjectId(roomId);
 
   const room = await this.roomModel
+
     .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+
     .exec();
 
   if (!room) {
+
     throw new NotFoundException('Room not found in this hotel');
+
   }
 
   const requestedRanges = dto.blockedRanges.map((range) => ({
+
     startDate: new Date(`${range.startDate}T00:00:00.000Z`),
+
     endDate: new Date(`${range.endDate}T00:00:00.000Z`),
+
   }));
 
   const now = new Date();
+
   const dateOverlapFilters = requestedRanges.map((range) => ({
+
     checkInDate: { $lt: range.endDate },
+
     checkOutDate: { $gt: range.startDate },
+
   }));
 
   const overlappingReservations = await this.hotelBookingModel
+
     .find({
+
       'rooms.roomId': roomObjectId,
+
       $or: [
+
         { status: HotelBookingStatus.CONFIRMED },
+
         {
+
           status: HotelBookingStatus.PENDING_PAYMENT,
+
           holdExpiresAt: { $gt: now },
+
         },
+
         {
+
           status: HotelBookingStatus.PENDING_PAYMENT,
+
           holdExpiresAt: null,
+
         },
+
       ],
+
       $and: [{ $or: dateOverlapFilters }],
+
     })
+
     .select({ _id: 1 })
+
     .lean()
+
     .exec();
 
   if (overlappingReservations.length > 0) {
+
     throw new ConflictException(
+
       'Room dates cannot be blocked while an active reservation overlaps them',
+
     );
+
   }
 
   const combinedRanges = [
+
     ...room.blockedRanges.map((range) => ({
+
       startDate: new Date(range.startDate),
+
       endDate: new Date(range.endDate),
+
     })),
+
     ...requestedRanges,
+
   ].sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
 
   const mergedRanges: Array<{ startDate: Date; endDate: Date }> = [];
 
   for (const range of combinedRanges) {
+
     const previous = mergedRanges[mergedRanges.length - 1];
 
     if (
+
       previous &&
+
       range.startDate.getTime() <= previous.endDate.getTime()
+
     ) {
+
       previous.endDate = new Date(
+
         Math.max(
+
           previous.endDate.getTime(),
+
           range.endDate.getTime(),
+
         ),
+
       );
+
     } else {
+
       mergedRanges.push({ ...range });
+
     }
+
   }
 
   const updatedRoom = await this.roomModel
+
     .findOneAndUpdate(
+
       { _id: roomObjectId, hotelId: hotelObjectId },
+
       { $set: { blockedRanges: mergedRanges } },
+
       { new: true, runValidators: true },
+
     )
+
     .exec();
 
   if (!updatedRoom) {
+
     throw new NotFoundException('Room not found in this hotel');
+
   }
 
   return updatedRoom;
+
 }
 
 async deactivateRoom(
+
   hotelId: string,
+
   roomId: string,
+
   userId: string,
+
 ) {
+
   if (
+
     !Types.ObjectId.isValid(hotelId) ||
+
     !Types.ObjectId.isValid(roomId)
+
   ) {
+
     throw new BadRequestException('Invalid hotel or room ID');
+
   }
 
   const hotelObjectId = new Types.ObjectId(hotelId);
+
   const roomObjectId = new Types.ObjectId(roomId);
 
   const user = await this.userModel.findById(userId).exec();
+
   const assignedHotelId =
+
     user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
       ? new Types.ObjectId(user.hotelId).toString()
+
       : null;
 
   if (
+
     !user ||
+
     user.role !== UserRole.MODERATOR ||
+
     assignedHotelId !== hotelObjectId.toString()
+
   ) {
+
     throw new ForbiddenException(
+
       'You can only deactivate rooms in the hotel assigned to your account',
+
     );
+
   }
 
   const room = await this.roomModel
+
     .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+
     .exec();
 
   if (!room) {
+
     throw new NotFoundException('Room not found in this hotel');
+
   }
 
   const now = new Date();
 
   const activeReservation = await this.hotelBookingModel
+
     .findOne({
+
       'rooms.roomId': roomObjectId,
+
       $or: [
+
         { status: HotelBookingStatus.CONFIRMED },
+
         {
+
           status: HotelBookingStatus.PENDING_PAYMENT,
+
           holdExpiresAt: { $gt: now },
+
         },
+
         {
+
           status: HotelBookingStatus.PENDING_PAYMENT,
+
           holdExpiresAt: null,
+
         },
+
       ],
+
     })
+
     .select({ _id: 1 })
+
     .lean()
+
     .exec();
 
   if (activeReservation) {
+
     throw new ConflictException(
+
       'A room cannot be deactivated while it has a confirmed or active pending reservation',
+
     );
+
   }
 
   room.isActive = false;
+
   await room.save();
 
   return room;
+
 }
 
 async deleteRoom(
+
   hotelId: string,
+
   roomId: string,
+
   userId: string,
+
 ) {
+
   if (
+
     !Types.ObjectId.isValid(hotelId) ||
+
     !Types.ObjectId.isValid(roomId)
+
   ) {
+
     throw new BadRequestException('Invalid hotel or room ID');
+
   }
 
   const hotelObjectId = new Types.ObjectId(hotelId);
+
   const roomObjectId = new Types.ObjectId(roomId);
 
   const user = await this.userModel.findById(userId).exec();
+
   const assignedHotelId =
+
     user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
       ? new Types.ObjectId(user.hotelId).toString()
+
       : null;
 
   if (
+
     !user ||
+
     user.role !== UserRole.MODERATOR ||
+
     assignedHotelId !== hotelObjectId.toString()
+
   ) {
+
     throw new ForbiddenException(
+
       'You can only delete rooms in the hotel assigned to your account',
+
     );
+
   }
 
   const room = await this.roomModel
+
     .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+
     .exec();
 
   if (!room) {
+
     throw new NotFoundException('Room not found in this hotel');
+
   }
 
   const reservation = await this.hotelBookingModel
+
     .findOne({ 'rooms.roomId': roomObjectId })
+
     .select({ _id: 1 })
+
     .lean()
+
     .exec();
 
   if (reservation) {
+
     throw new ConflictException(
+
       'A room cannot be deleted because it has been reserved',
+
     );
+
   }
 
   await this.roomModel.deleteOne({
+
     _id: roomObjectId,
+
     hotelId: hotelObjectId,
+
   }).exec();
 
   return {
+
     message: 'Room deleted successfully',
+
     roomId,
+
   };
+
 }
 
 async getRoomStatuses(
+
   hotelId: string,
+
   query: RoomStatusQueryDto,
+
   userId: string,
+
 ) {
+
   if (!Types.ObjectId.isValid(hotelId)) {
+
     throw new BadRequestException('Invalid hotel ID');
+
   }
 
   const hotelObjectId = new Types.ObjectId(hotelId);
+
   const user = await this.userModel.findById(userId).exec();
 
   const assignedHotelId =
+
     user?.hotelId && Types.ObjectId.isValid(user.hotelId)
+
       ? new Types.ObjectId(user.hotelId).toString()
+
       : null;
 
   if (
+
     !user ||
+
     user.role !== UserRole.MODERATOR ||
+
     assignedHotelId !== hotelObjectId.toString()
+
   ) {
+
     throw new ForbiddenException(
+
       'You can only view room statuses for the hotel assigned to your account',
+
     );
+
   }
 
   const hotel = await this.hotelModel.findById(hotelObjectId).exec();
 
   if (!hotel) {
+
     throw new NotFoundException('Hotel not found');
+
   }
 
   const startDate = new Date(`${query.startDate}T00:00:00.000Z`);
+
   const endDate = new Date(`${query.endDate}T00:00:00.000Z`);
 
   const rooms = await this.roomModel
+
     .find({ hotelId: hotelObjectId })
+
     .sort({ name: 1, _id: 1 })
+
     .exec();
 
   const roomIds = rooms.map((room) => room._id);
+
   const now = new Date();
 
   const bookings =
+
     roomIds.length === 0
+
       ? []
+
       : await this.hotelBookingModel
+
           .find({
+
             'rooms.roomId': { $in: roomIds },
+
             checkInDate: { $lt: endDate },
+
             checkOutDate: { $gt: startDate },
+
             $or: [
+
               { status: HotelBookingStatus.CONFIRMED },
+
               {
+
                 status: HotelBookingStatus.PENDING_PAYMENT,
+
                 holdExpiresAt: { $gt: now },
+
               },
+
               {
+
                 status: HotelBookingStatus.PENDING_PAYMENT,
+
                 holdExpiresAt: null,
+
               },
+
             ],
+
           })
+
           .select({ reference: 1, rooms: 1 })
+
           .lean()
+
           .exec();
 
   return rooms.map((room) => {
+
     const booking = bookings.find((candidate) =>
+
       candidate.rooms.some(
+
         (bookingRoom) =>
+
           bookingRoom.roomId.toString() === room._id.toString(),
+
       ),
+
     );
 
     if (booking) {
+
       return {
+
         roomId: room._id,
+
         roomName: room.name,
+
         status: 'Booked',
+
         reservationReference: booking.reference ?? null,
+
       };
+
     }
 
     const overlapsBlockedRange = room.blockedRanges.some(
+
       (range) =>
+
         new Date(range.startDate).getTime() < endDate.getTime() &&
+
         new Date(range.endDate).getTime() > startDate.getTime(),
+
     );
 
     const availableForWholeRange = this.isStayCoveredByRanges(
+
       room.availabilityRanges,
+
       startDate,
+
       endDate,
+
     );
 
     if (!room.isActive || overlapsBlockedRange || !availableForWholeRange) {
+
       return {
+
         roomId: room._id,
+
         roomName: room.name,
+
         status: 'Blocked',
+
         reservationReference: null,
+
       };
+
     }
 
     return {
+
       roomId: room._id,
+
       roomName: room.name,
+
       status: 'Available',
+
       reservationReference: null,
+
     };
+
   });
+
 }
+
+async getHotelReservations(hotelId: string, userId: string) {
+
+  if (!Types.ObjectId.isValid(hotelId)) {
+
+    throw new BadRequestException('Invalid hotel ID');
+
+  }
+
+  const user = await this.userModel.findById(userId).exec();
+
+  const assignedHotelId =
+
+    user?.hotelId && Types.ObjectId.isValid(String(user.hotelId))
+
+      ? new Types.ObjectId(String(user.hotelId)).toString()
+
+      : null;
+
+  if (
+
+    !user ||
+
+    user.role !== UserRole.MODERATOR ||
+
+    assignedHotelId !== new Types.ObjectId(hotelId).toString()
+
+  ) {
+
+    throw new ForbiddenException(
+
+      'You can only view reservations for your assigned hotel',
+
+    );
+
+  }
+
+  const hotel = await this.hotelModel.findById(hotelId).exec();
+
+  if (!hotel) {
+
+    throw new NotFoundException('Hotel not found');
+
+  }
+
+  const reservations = await this.hotelBookingModel
+
+    .find({ hotelId: new Types.ObjectId(hotelId) })
+
+    .populate('userId', 'email')
+
+    .sort({ checkInDate: 1, createdAt: -1 })
+
+    .lean()
+
+    .exec();
+
+  return {
+
+    hotelId,
+
+    hotelName: hotel.name,
+
+    total: reservations.length,
+
+    reservations,
+
+  };
+
+}
+
 }

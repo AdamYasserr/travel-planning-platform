@@ -7,6 +7,7 @@ import {
   IsMongoId,
   IsNotEmpty,
   IsNumber,
+  IsIn,
   IsOptional,
   IsString,
   Matches,
@@ -383,4 +384,85 @@ export class HotelDetailsQueryDto {
   @IsDateString({ strict: true })
   @Validate(HotelDetailsDatePairConstraint)
   checkOutDate?: string;
+}
+
+export class SearchHotelsQueryDto {
+  @ApiPropertyOptional({ example: '507f1f77bcf86cd799439011' })
+  @IsOptional()
+  @IsMongoId()
+  cityId?: string;
+
+  @ApiPropertyOptional({ example: '507f1f77bcf86cd799439012' })
+  @IsOptional()
+  @IsMongoId()
+  countryId?: string;
+
+  @ApiProperty({ example: '2026-12-01' })
+  @IsDateString({ strict: true })
+  checkInDate: string;
+
+  @ApiProperty({ example: '2026-12-05' })
+  @IsDateString({ strict: true })
+  checkOutDate: string;
+
+  @ApiProperty({ example: 2, minimum: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  guests: number;
+
+  @ApiPropertyOptional({ example: 1, minimum: 1, default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  rooms = 1;
+
+  @ApiPropertyOptional({ example: 100, minimum: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  minPrice?: number;
+
+  @ApiPropertyOptional({ example: 500, minimum: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  maxPrice?: number;
+
+  @ApiPropertyOptional({ example: 4, minimum: 1, maximum: 5 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(5)
+  minRating?: number;
+
+  @ApiPropertyOptional({ enum: ['price', 'rating'], default: 'price' })
+  @IsOptional()
+  @IsIn(['price', 'rating'])
+  sortBy: 'price' | 'rating' = 'price';
+
+  @ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'asc' })
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  sortOrder: 'asc' | 'desc' = 'asc';
+}
+
+export class HotelAvailabilityQueryDto {
+  @ApiProperty({ example: '2026-12-01' })
+  @IsDateString({ strict: true })
+  checkInDate: string;
+
+  @ApiProperty({ example: '2026-12-05' })
+  @IsDateString({ strict: true })
+  checkOutDate: string;
+
+  @ApiProperty({ example: 2, minimum: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  guests: number;
 }
