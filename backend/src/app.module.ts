@@ -27,6 +27,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
 import { AirportsModule } from './modules/airports/airports.module';
+import { BlogModule } from './modules/blog/blog.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { AirportsModule } from './modules/airports/airports.module';
     AirlinesModule,
     FlightsModule,
     AirportsModule,
+    BlogModule,
 
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([

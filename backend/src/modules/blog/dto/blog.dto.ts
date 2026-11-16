@@ -28,8 +28,6 @@ function trimTags(value: unknown): unknown {
     : value;
 }
 
-// These DTOs describe the shared Blog contracts. BLG-01, BLG-05, and BLG-08
-// endpoint ownership remains subject to team confirmation.
 export class CreatePostDto {
   @ApiProperty({ example: 'A weekend in Alexandria' })
   @Transform(({ value }) =>
@@ -67,6 +65,22 @@ export class CreatePostDto {
 }
 
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
+
+export class UpdatePostTagsDto {
+  @ApiProperty({
+    type: [String],
+    maxItems: 5,
+    example: ['Alexandria', 'Egypt'],
+    description: 'Replacement tag list. An empty array clears all tags.',
+  })
+  @Transform(({ value }) => trimTags(value))
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @MaxLength(30, { each: true })
+  tags: string[];
+}
 
 export class PostsQueryDto {
   @ApiPropertyOptional({
