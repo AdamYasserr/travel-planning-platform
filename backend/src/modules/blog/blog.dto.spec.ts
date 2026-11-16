@@ -4,6 +4,9 @@ import { validate } from 'class-validator';
 import {
   CreateCommentDto,
   CreatePostDto,
+  SearchPostsQueryDto,
+  UpdateCommentDto,
+  UpdatePostDto,
   UpdatePostTagsDto,
 } from './dto/blog.dto';
 import { PostStatus } from './enums/post-status.enum';
@@ -99,6 +102,38 @@ describe('Blog Phase 1 DTO validation', () => {
     for (const body of ['', '   ', 'x'.repeat(501)]) {
       const dto = plainToInstance(CreateCommentDto, { body });
       await expect(validate(dto)).resolves.not.toHaveLength(0);
+    }
+  });
+
+  it('trims and validates search keywords and pagination', async () => {
+    const valid = plainToInstance(SearchPostsQueryDto, {
+      keyword: '  Alexandria  ',
+      page: '2',
+    });
+    await expect(validate(valid)).resolves.toHaveLength(0);
+    expect(valid.keyword).toBe('Alexandria');
+    expect(valid.page).toBe(2);
+
+    for (const payload of [
+      { keyword: '   ' },
+      { keyword: 'x'.repeat(101) },
+      { keyword: 'coast', page: 0 },
+      { keyword: 'coast', page: 1001 },
+      { keyword: 'coast', page: Number.MAX_SAFE_INTEGER },
+    ]) {
+      const invalid = plainToInstance(SearchPostsQueryDto, payload);
+      await expect(validate(invalid)).resolves.not.toHaveLength(0);
+    }
+  });
+
+  it('allows partial post edits and enforces comment edit bounds', async () => {
+    const postUpdate = plainToInstance(UpdatePostDto, { title: ' Edited ' });
+    await expect(validate(postUpdate)).resolves.toHaveLength(0);
+    expect(postUpdate.title).toBe('Edited');
+
+    for (const body of ['', '   ', 'x'.repeat(501)]) {
+      const commentUpdate = plainToInstance(UpdateCommentDto, { body });
+      await expect(validate(commentUpdate)).resolves.not.toHaveLength(0);
     }
   });
 });
