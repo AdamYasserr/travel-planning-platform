@@ -19,8 +19,7 @@ import { FlightBookingStatus } from './enums/flight-booking-status.enum';
 import { FlightBooking } from './schemas/flight-booking.schema';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentBookingType } from '../payments/enums/payment-status.enum';
-
-const HOLD_DURATION_MS = 15 * 60 * 1000;
+import { BOOKING_HOLD_DURATION_MS } from '../../common/booking/booking-hold';
 
 @Injectable()
 export class FlightBookingsService {
@@ -101,7 +100,7 @@ export class FlightBookingsService {
       totalPrice: pricePerSeat * dto.passengers.length,
       currency: reservedInventory.currency,
       status: FlightBookingStatus.PENDING_PAYMENT,
-      holdExpiresAt: new Date(now.getTime() + HOLD_DURATION_MS),
+      holdExpiresAt: new Date(now.getTime() + BOOKING_HOLD_DURATION_MS),
       reference: `FLT-${randomUUID()}`,
       policiesAcceptedAt: now,
       cancellationTiers: [...(cancellationPolicy?.tiers ?? [])]

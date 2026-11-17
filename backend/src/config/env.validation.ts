@@ -34,6 +34,8 @@ export const envValidationSchema = Joi.object({
   STRIPE_CHECKOUT_SUCCESS_URL: Joi.string().uri().optional().allow(''),
   STRIPE_CHECKOUT_CANCEL_URL: Joi.string().uri().optional().allow(''),
 
+  BOOKING_HOLD_MINUTES: Joi.number().integer().min(1).max(120).default(10),
+
   FXRATES_API_KEY: Joi.string().optional().allow(''),
   FXRATES_BASE_URL: Joi.string()
     .uri()

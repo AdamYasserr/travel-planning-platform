@@ -82,6 +82,15 @@ describe('FlightBookingsService', () => {
     expect(result).toMatchObject({ totalPrice: 100 });
   });
 
+  it('holds seats for exactly 10 minutes (FLT-22)', async () => {
+    const before = Date.now();
+    await service.create(userId, dto());
+    const [[created]] = bookingCreate.mock.calls as unknown as [[{ holdExpiresAt: Date }]];
+    const ms = created.holdExpiresAt.getTime() - before;
+    expect(ms).toBeGreaterThanOrEqual(10 * 60 * 1000);
+    expect(ms).toBeLessThan(10 * 60 * 1000 + 5_000);
+  });
+
   it('rejects unaccepted policies before reserving seats', async () => {
     await expect(
       service.create(userId, { ...dto(), policiesAccepted: false }),
