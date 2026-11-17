@@ -11,7 +11,7 @@ import { randomBytes } from 'crypto';
 
 import { User, UserDocument } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
-import { CreateModeratorDto, AdminAccountQueryDto, AdminBookingQueryDto, AdminProviderType, ModeratorProviderType } from './dto/administration.dto';
+import { CreateModeratorDto, AdminAccountQueryDto, AdminAccountStatus, AdminBookingDateField, AdminBookingQueryDto, AdminProviderType, ModeratorProviderType } from './dto/administration.dto';
 import { Airline } from '../airlines/schemas/airline.schema';
 import { Hotel } from '../hotels/schemas/hotel.schema';
 import { FlightBooking } from '../flight-bookings/schemas/flight-booking.schema';
@@ -61,18 +61,31 @@ export class AdministrationService {
     return { message: 'Moderator account created', account: this.publicAccount(moderator) };
   }
 
+  /** ACC-14: accounts with search (name/email), role AND status filters, page size 10. */
   async listAccounts(query: AdminAccountQueryDto) {
-    const page = query.page ?? 1; const limit = query.limit ?? 20;
-    const filter: Record<string, unknown> = {};
-    if (query.role) filter.role = query.role;
+    const page = query.page ?? 1; const limit = query.limit ?? 10;
+    const clauses: Record<string, unknown>[] = [];
+    if (query.role) clauses.push({ role: query.role });
+    if (query.status === AdminAccountStatus.DEACTIVATED) clauses.push({ $or: [{ isActive: false }, { deactivatedAt: { $ne: null } }] });
+    if (query.status === AdminAccountStatus.SUSPENDED) clauses.push({ isActive: { $ne: false }, deactivatedAt: null, isSuspended: true });
+    if (query.status === AdminAccountStatus.ACTIVE) clauses.push({ isActive: { $ne: false }, deactivatedAt: null, isSuspended: { $ne: true } });
     if (query.search?.trim()) {
       const safeSearch = escapeRegex(query.search.trim());
-      filter.$or = [{ name: { $regex: safeSearch, $options: 'i' } }, { email: { $regex: safeSearch, $options: 'i' } }];
+      clauses.push({ $or: [{ name: { $regex: safeSearch, $options: 'i' } }, { email: { $regex: safeSearch, $options: 'i' } }] });
     }
-    const [items, total] = await Promise.all([
-      this.userModel.find(filter).select('-password -refreshTokenHash').sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean().exec(),
+    const filter = clauses.length ? { $and: clauses } : {};
+    const [rows, total] = await Promise.all([
+      this.userModel.find(filter).select('name email role isActive isSuspended deactivatedAt createdAt').sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean().exec(),
       this.userModel.countDocuments(filter).exec(),
     ]);
+    const items = rows.map((user: any) => ({
+      id: String(user._id),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: accountStatus(user),
+      registeredAt: user.createdAt,
+    }));
     return { items, page, limit, total, pages: Math.ceil(total / limit) };
   }
 
@@ -120,25 +133,88 @@ export class AdministrationService {
     return { message: active ? 'Provider reactivated' : 'Provider deactivated', provider: { id: provider._id.toString(), isActive: provider.isActive } };
   }
 
+  /**
+   * ACC-17: bookings platform-wide. Filters: type, status, user, and a from/to date range applied to the
+   * travel start date (check-in / departure, default) or the booking creation date (dateField=booked).
+   */
   async listBookings(query: AdminBookingQueryDto) {
     const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
+    const limit = query.limit ?? 10;
     const types: Array<'flight' | 'hotel'> = query.type ? [query.type] : ['flight', 'hotel'];
-    const filter: Record<string, unknown> = {};
-    if (query.status) filter.status = query.status;
-    if (query.userId) filter.userId = new Types.ObjectId(query.userId);
-    const [flightItems, flightTotal, hotelItems, hotelTotal] = await Promise.all([
-      types.includes('flight') ? this.flightBookings.find(filter).sort({ createdAt: -1, _id: -1 }).lean().exec() : [],
-      types.includes('flight') ? this.flightBookings.countDocuments(filter).exec() : 0,
-      types.includes('hotel') ? this.hotelBookings.find(filter).sort({ createdAt: -1, _id: -1 }).lean().exec() : [],
-      types.includes('hotel') ? this.hotelBookings.countDocuments(filter).exec() : 0,
+    const base: Record<string, unknown> = {};
+    if (query.status) base.status = query.status;
+    if (query.userId) base.userId = new Types.ObjectId(query.userId);
+    const range = this.dateRange(query.from, query.to);
+    const booked = query.dateField === AdminBookingDateField.BOOKED;
+    const hotelFilter = { ...base, ...(range ? { [booked ? 'createdAt' : 'checkInDate']: range } : {}) };
+    const flightFilter = { ...base, ...(range ? { [booked ? 'createdAt' : 'departureTime']: range } : {}) };
+    const fetchCount = page * limit;
+    const wantFlights = types.includes('flight');
+    const wantHotels = types.includes('hotel');
+
+    const [flightRows, flightTotal, hotelRows, hotelTotal] = await Promise.all([
+      wantFlights ? this.flightBookings.find(flightFilter).sort({ createdAt: -1, _id: -1 }).limit(fetchCount).lean().exec() : [],
+      wantFlights ? this.flightBookings.countDocuments(flightFilter).exec() : 0,
+      wantHotels ? this.hotelBookings.find(hotelFilter).sort({ createdAt: -1, _id: -1 }).limit(fetchCount).lean().exec() : [],
+      wantHotels ? this.hotelBookings.countDocuments(hotelFilter).exec() : 0,
     ]);
-    const sorted = [
-      ...flightItems.map((booking) => ({ type: 'flight' as const, ...booking })),
-      ...hotelItems.map((booking) => ({ type: 'hotel' as const, ...booking })),
-    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const merged = [
+      ...(flightRows as any[]).map((row) => ({ kind: 'flight' as const, row })),
+      ...(hotelRows as any[]).map((row) => ({ kind: 'hotel' as const, row })),
+    ]
+      .sort((a, b) => new Date(b.row.createdAt).getTime() - new Date(a.row.createdAt).getTime())
+      .slice((page - 1) * limit, page * limit);
+
+    const pageFlights = merged.filter((m) => m.kind === 'flight').map((m) => m.row);
+    const pageHotels = merged.filter((m) => m.kind === 'hotel').map((m) => m.row);
+    const [users, hotels, flights] = await Promise.all([
+      this.userModel.find({ _id: { $in: merged.map((m) => m.row.userId) } }).select('name email').lean().exec(),
+      pageHotels.length ? this.hotelModel.find({ _id: { $in: pageHotels.map((b) => b.hotelId) } }).select('name').lean().exec() : [],
+      pageFlights.length ? this.flights.find({ _id: { $in: pageFlights.map((b) => b.flightId) } }).select('airlineId flightNumber').lean().exec() : [],
+    ]);
+    const airlines = flights.length ? await this.airlineModel.find({ _id: { $in: flights.map((f: any) => f.airlineId) } }).select('name').lean().exec() : [];
+    const byId = <T extends { _id: unknown }>(rows: T[]) => new Map(rows.map((r) => [String(r._id), r]));
+    const userMap = byId(users as any[]);
+    const hotelMap = byId(hotels as any[]);
+    const flightMap = byId(flights as any[]);
+    const airlineMap = byId(airlines as any[]);
+
+    const items = merged.map(({ kind, row }) => {
+      const user: any = userMap.get(String(row.userId));
+      const common = {
+        id: String(row._id),
+        type: kind,
+        reference: row.reference,
+        user: user ? { id: String(user._id), name: user.name, email: user.email } : { id: String(row.userId), name: null, email: null },
+        amount: { total: row.totalPrice, currency: row.currency },
+        status: row.status,
+        bookedAt: row.createdAt,
+      };
+      if (kind === 'hotel') {
+        const hotel: any = hotelMap.get(String(row.hotelId));
+        return { ...common, provider: { id: String(row.hotelId), name: hotel?.name ?? null }, dates: { checkIn: row.checkInDate, checkOut: row.checkOutDate } };
+      }
+      const flight: any = flightMap.get(String(row.flightId));
+      const airline: any = flight ? airlineMap.get(String(flight.airlineId)) : undefined;
+      return { ...common, provider: { id: flight ? String(flight.airlineId) : null, name: airline?.name ?? null, flightNumber: flight?.flightNumber ?? null }, dates: { departure: row.departureTime } };
+    });
+
     const total = flightTotal + hotelTotal;
-    return { items: sorted.slice((page - 1) * limit, page * limit), page, limit, total, pages: Math.ceil(total / limit), countsByType: { flight: flightTotal, hotel: hotelTotal } };
+    return { items, page, limit, total, pages: Math.ceil(total / limit), countsByType: { flight: flightTotal, hotel: hotelTotal } };
+  }
+
+  private dateRange(from?: string, to?: string) {
+    if (!from && !to) return null;
+    const start = from ? new Date(`${from}T00:00:00.000Z`) : null;
+    const endExclusive = to ? new Date(new Date(`${to}T00:00:00.000Z`).getTime() + 86_400_000) : null;
+    if ((start && Number.isNaN(start.getTime())) || (endExclusive && Number.isNaN(endExclusive.getTime()))) {
+      throw new BadRequestException('Invalid date range');
+    }
+    if (start && endExclusive && start.getTime() >= endExclusive.getTime()) {
+      throw new BadRequestException('from must not be after to');
+    }
+    return { ...(start ? { $gte: start } : {}), ...(endExclusive ? { $lt: endExclusive } : {}) };
   }
 
   async resetUserPassword(actorId: string, userId: string) {
@@ -197,6 +273,11 @@ export class AdministrationService {
   private publicAccount(user: any) {
     return { id: user._id.toString(), name: user.name, email: user.email, role: user.role, isActive: user.isActive, isSuspended: user.isSuspended, mustChangePassword: user.mustChangePassword, airlineId: user.airlineId ?? null, hotelId: user.hotelId ?? null, createdAt: user.createdAt };
   }
+}
+
+function accountStatus(user: { isActive?: boolean; deactivatedAt?: Date | null; isSuspended?: boolean }): AdminAccountStatus {
+  if (user.isActive === false || user.deactivatedAt) return AdminAccountStatus.DEACTIVATED;
+  return user.isSuspended ? AdminAccountStatus.SUSPENDED : AdminAccountStatus.ACTIVE;
 }
 
 function isDuplicateKey(error: unknown): boolean {

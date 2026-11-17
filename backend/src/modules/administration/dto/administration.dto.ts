@@ -45,6 +45,15 @@ export class CreateModeratorDto {
   providerId: string;
 }
 
+export enum AdminAccountStatus {
+  ACTIVE = 'active',
+  SUSPENDED = 'suspended',
+  DEACTIVATED = 'deactivated',
+}
+
+/** GEN-05: platform-wide page size is 10. */
+export const ADMIN_PAGE_SIZE = 10;
+
 export class AdminAccountQueryDto {
   @ApiPropertyOptional({ minimum: 1, default: 1 })
   @IsOptional()
@@ -53,24 +62,34 @@ export class AdminAccountQueryDto {
   @Min(1)
   page = 1;
 
-  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: ADMIN_PAGE_SIZE })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 20;
+  limit = ADMIN_PAGE_SIZE;
 
-  @ApiPropertyOptional({ enum: ['user', 'moderator', 'admin'] })
+  @ApiPropertyOptional({ enum: ['user', 'moderator', 'admin'], description: 'Filter by role (combines with status and search)' })
   @IsOptional()
   @IsEnum(['user', 'moderator', 'admin'])
   role?: string;
 
-  @ApiPropertyOptional({ description: 'Filter by account name or email' })
+  @ApiPropertyOptional({ enum: AdminAccountStatus, description: 'Filter by status (combines with role and search)' })
+  @IsOptional()
+  @IsEnum(AdminAccountStatus)
+  status?: AdminAccountStatus;
+
+  @ApiPropertyOptional({ description: 'Case-insensitive match on name or email' })
   @IsOptional()
   @IsString()
   @MaxLength(100)
   search?: string;
+}
+
+export enum AdminBookingDateField {
+  TRAVEL = 'travel',
+  BOOKED = 'booked',
 }
 
 export class AdminBookingQueryDto {
@@ -79,7 +98,7 @@ export class AdminBookingQueryDto {
   @IsEnum(['flight', 'hotel'])
   type?: 'flight' | 'hotel';
 
-  @ApiPropertyOptional({ example: 'Pending Payment' })
+  @ApiPropertyOptional({ example: 'Pending Payment', enum: ['Pending Payment', 'Confirmed', 'Completed', 'Expired', 'Cancelled'] })
   @IsOptional()
   @IsString()
   @MaxLength(40)
@@ -90,6 +109,25 @@ export class AdminBookingQueryDto {
   @IsMongoId()
   userId?: string;
 
+  @ApiPropertyOptional({ example: '2026-12-01', description: 'Start of date range, inclusive (YYYY-MM-DD). Applies to the field chosen by dateField.' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from must be a date in YYYY-MM-DD format' })
+  from?: string;
+
+  @ApiPropertyOptional({ example: '2026-12-31', description: 'End of date range, inclusive (YYYY-MM-DD). Applies to the field chosen by dateField.' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to must be a date in YYYY-MM-DD format' })
+  to?: string;
+
+  @ApiPropertyOptional({
+    enum: AdminBookingDateField,
+    default: AdminBookingDateField.TRAVEL,
+    description: 'Which date from/to filter: "travel" = check-in (hotel) or departure (flight) date; "booked" = booking creation date.',
+  })
+  @IsOptional()
+  @IsEnum(AdminBookingDateField)
+  dateField?: AdminBookingDateField = AdminBookingDateField.TRAVEL;
+
   @ApiPropertyOptional({ minimum: 1, default: 1 })
   @IsOptional()
   @Type(() => Number)
@@ -97,11 +135,11 @@ export class AdminBookingQueryDto {
   @Min(1)
   page = 1;
 
-  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: ADMIN_PAGE_SIZE })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 20;
+  limit = ADMIN_PAGE_SIZE;
 }
