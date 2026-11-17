@@ -168,9 +168,8 @@ export class AuthController {
 
   @AllowPasswordChange()
   @Post('change-password')
-  @Patch('change-password')
   @ApiCookieAuth('access_token')
-  @ApiOperation({ summary: 'Change the authenticated user password (POST and PATCH are equivalent)' })
+  @ApiOperation({ summary: 'Change the authenticated user password' })
   @ApiBody({ type: ChangePasswordDto })
   @ApiResponse({ status: 201, description: 'Password changed and sessions cleared.' })
   @ApiResponse({ status: 400, description: 'Invalid password input.' })
@@ -188,6 +187,23 @@ export class AuthController {
     this.clearAuthCookies(response);
 
     return result;
+  }
+
+  // Nest keeps only one HTTP method per handler, so PATCH needs its own method; the logic is shared.
+  @AllowPasswordChange()
+  @Patch('change-password')
+  @ApiCookieAuth('access_token')
+  @ApiOperation({
+    summary: 'Change the authenticated user password (PATCH)',
+    description: 'Same behaviour as POST /auth/change-password.',
+  })
+  @ApiBody({ type: ChangePasswordDto })
+  async changePasswordPatch(
+    @Req() request: AuthenticatedRequest,
+    @Body() changePasswordDto: ChangePasswordDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.changePassword(request, changePasswordDto, response);
   }
 
   @Patch('profile')

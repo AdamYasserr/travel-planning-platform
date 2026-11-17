@@ -70,8 +70,8 @@ describe('JwtAuthGuard forced password change', () => {
         .filter((name) => name !== 'constructor' && typeof (controller.prototype as any)[name] === 'function')
         .filter((name) => Reflect.getMetadata(ALLOW_PASSWORD_CHANGE_KEY, (controller.prototype as any)[name]));
 
-    it('AuthController: only change-password and /auth/me', () => {
-      expect(allowedHandlers(AuthController).sort()).toEqual(['changePassword', 'getMe']);
+    it('AuthController: only change-password (POST and PATCH) and /auth/me', () => {
+      expect(allowedHandlers(AuthController).sort()).toEqual(['changePassword', 'changePasswordPatch', 'getMe']);
     });
 
     it('UsersController: no route is exempt (profile, delete account all require the change first)', () => {
