@@ -94,13 +94,17 @@ describe('auth, accounts and admin listings on a real MongoDB', () => {
   describe('lockout (ACC-05)', () => {
     it('concurrent wrong passwords are counted atomically and lock the account exactly once', async () => {
       await seedUser();
-      const results = await Promise.all(Array.from({ length: 12 }, () => status(login('Wrong-pass1'))));
+      const statuses = await Promise.all(Array.from({ length: 12 }, () => status(login('Wrong-pass1'))));
       const doc = await userModel.findOne({ email: 'amina@example.com' }).lean();
-      expect(doc.failedLoginAttempts).toBe(12); // no lost updates
+      // Each counted attempt gets a unique number from the atomic $inc: attempts 1..4 answer 401, every later one
+      // (and any request that arrives after the lock is set) answers 423. Timing only decides how many arrive late.
+      expect(statuses.filter((s) => s === 401)).toHaveLength(MAX_LOGIN_ATTEMPTS - 1);
+      expect(statuses.filter((s) => s === 423)).toHaveLength(12 - (MAX_LOGIN_ATTEMPTS - 1));
+      expect(doc.failedLoginAttempts).toBeGreaterThanOrEqual(MAX_LOGIN_ATTEMPTS);
+      expect(doc.failedLoginAttempts).toBeLessThanOrEqual(12);
       expect(doc.lockUntil).toBeInstanceOf(Date);
       expect(doc.lockUntil.getTime() - Date.now()).toBeLessThanOrEqual(LOCK_TIME_MS);
       expect(doc.lockUntil.getTime() - Date.now()).toBeGreaterThan(LOCK_TIME_MS - 60_000);
-      expect(results.filter((s) => s === 423).length).toBeGreaterThanOrEqual(12 - (MAX_LOGIN_ATTEMPTS - 1));
       expect(await status(login())).toBe(423); // correct password is refused while locked
     });
 

@@ -129,6 +129,36 @@ npm run seed:reference -- ./other-dir  # or a custom folder (also: REFERENCE_DAT
 - `npm test` is fast and offline. `npm run test:integration` runs the concurrency tests against an
   in-memory MongoDB replica set (first run downloads a mongod binary; never touches Atlas).
 
+### Route aliases (project PDF, Section 8)
+
+The routes named in the PDF are the main ones; the earlier routes keep working and are listed in Swagger as
+"legacy alias of ...". Each alias runs the same service method with the same authentication, role and ownership checks.
+
+| Main route (PDF) | Legacy route |
+| --- | --- |
+| `POST /api/flight-bookings/:id/cancel` | `DELETE /api/flight-bookings/:id` |
+| `POST /api/hotel-bookings/:id/cancel` | `DELETE /api/hotel-bookings/:id` |
+| `POST /api/flight-bookings/hold` | `POST /api/flight-bookings` |
+| `PATCH /api/itineraries/:id/days/reorder` | `PATCH /api/itineraries/:id/days/order` |
+| `POST /api/payments/webhook` | `POST /api/stripe/webhook` |
+| `PATCH/DELETE /api/activities/:id` | `.../itineraries/:id/days/:dayId/activities/:activityId` |
+| `PATCH/DELETE /api/budgets/:id` | `.../days/:dayId/budget-entries/:entryId` |
+| `POST /api/itineraries/:id/days/:dayId/budgets` | `.../days/:dayId/budget-entries` |
+| `PATCH/DELETE /api/transport-costs/:id` | `.../itineraries/:id/transport-costs/:costId` |
+| `GET /api/hotels/:id/availability` (moderator, own hotel) | `GET /api/hotels/:id/rooms/status` |
+| `PUT /api/hotels/:id/policies` (moderator, own hotel) | `PATCH /api/hotels/:id` |
+| `PATCH /api/auth/change-password` | `POST /api/auth/change-password` |
+
+New views over existing data: `GET /api/itineraries/:id/budget-summary` (the `budgetSummary` section of the itinerary)
+and `GET /api/refunds/:id`. A refund is not a separate record yet: its id is the **payment id**. Cancellation responses and
+`GET /api/payments/:id` return it as `refundId` (null when nothing is refunded); `GET /api/refunds/:id` is 404 when the payment has no refund.
+
+> **Warning: `POST /api/flight-bookings/hold` and `POST /api/flight-bookings` are the same operation.** Creating the booking
+> IS the hold (a Pending Payment booking that holds the seats for 10 minutes). **Do not call both** for the same trip: that
+> creates two pending bookings and holds the seats twice.
+
+`GET /api/hotels/:id/rooms/available` (the public room search) is intentionally not part of this change.
+
 ### Authentication cookies and `COOKIE_SECURE`
 
 Auth tokens are only ever sent as `httpOnly` cookies (never in a response body). Cookie flags:
