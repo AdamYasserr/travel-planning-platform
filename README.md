@@ -151,8 +151,8 @@ The routes named in the PDF are the main ones; the earlier routes keep working a
 | `PATCH /api/auth/change-password` | `POST /api/auth/change-password` |
 
 New views over existing data: `GET /api/itineraries/:id/budget-summary` (the `budgetSummary` section of the itinerary)
-and `GET /api/refunds/:id`. A refund is not a separate record yet: its id is the **payment id**. Cancellation responses and
-`GET /api/payments/:id` return it as `refundId` (null when nothing is refunded); `GET /api/refunds/:id` is 404 when the payment has no refund.
+and `GET /api/refunds/:id`. A refund is its own record with its own id (see "Refunds" below). Cancellation responses and
+`GET /api/payments/:id` return it as `refundId` (null when nothing is refunded); a payment id is not a refund id.
 
 > **Warning: `POST /api/flight-bookings/hold` and `POST /api/flight-bookings` are the same operation.** Creating the booking
 > IS the hold (a Pending Payment booking that holds the seats for 10 minutes). **Do not call both** for the same trip: that
@@ -168,7 +168,7 @@ and `GET /api/refunds/:id`. A refund is not a separate record yet: its id is the
 2. `GET /api/bookings/:type/:id/policies` shows the provider policies: hotel cancellation tiers and check-in/check-out times; flight cancellation tiers and the baggage policy. They are **snapshotted on the booking** at creation, so what the user accepts cannot change later. Owner only (another user's booking is 404).
 3. `POST /api/bookings/:type/:id/accept-policies` with body `{ "accepted": true }` stores `policiesAcceptedAt` (a second call keeps the first timestamp). Payment is blocked (409) until then.
 4. `POST /api/payments` with `{ "bookingType": "hotel" | "flight", "bookingId": "..." }` creates a Stripe **PaymentIntent** and returns `{ paymentId, clientSecret, amount, amountMinor, currency }`. `amount` is in major units (`4500.5`), `amountMinor` in Stripe's minor units (`450050`). The amount and currency always come from the **booking**, never from the client. The browser passes `clientSecret` to Stripe Elements, so card details never reach this backend. Only the PaymentIntent id, amount, currency and status are stored; the client secret is never stored or logged.
-5. **The booking is confirmed only by Stripe's signed webhook** (`POST /api/payments/webhook`, `payment_intent.succeeded`). The handler checks the signature on the raw body, is idempotent per Stripe event id, and confirms only if the PaymentIntent is the one we created, its amount and currency equal the booking's, and the booking is still Pending Payment with a valid hold. Anything else is **not** confirmed: it is logged (ids only) and, because the money was taken, the payment is flagged Refund Pending for the existing refund path. A success that arrives after the hold expired therefore never confirms an Expired booking. `payment_intent.payment_failed` marks the payment Failed and leaves the booking Pending Payment.
+5. **The booking is confirmed only by Stripe's signed webhook** (`POST /api/payments/webhook`, `payment_intent.succeeded`). The handler checks the signature on the raw body, is idempotent per Stripe event id, and confirms only if the PaymentIntent is the one we created, its amount and currency equal the booking's, and the booking is still Pending Payment with a valid hold. Anything else is **not** confirmed: it is logged (ids only) and, because the money was taken, a 100% refund is opened (see "Refunds" below). A success that arrives after the hold expired therefore never confirms an Expired booking. `payment_intent.payment_failed` marks the payment Failed and leaves the booking Pending Payment.
 6. After a failed attempt, `POST /api/payments/:id/retry` lets the user try again until the hold expires (same PaymentIntent while Stripe says it is still usable, otherwise a new one). When a hold expires, or an unpaid booking is cancelled, its PaymentIntent is cancelled.
 7. `GET /api/payments/:id` shows the status (owner only).
 
@@ -187,6 +187,30 @@ It prints a signing secret that starts with `whsec_`. Put it in `backend/.env` a
 **One platform currency (PAY-04).** `PLATFORM_CURRENCY` (default `USD`). Room and cabin creation and update take an optional `currency`: omitted means the platform currency, and any other value is a 400 on the `currency` field (`currency must be USD`). A booking priced in another currency (data created before this rule) cannot be paid (409). Rooms and cabins already stored in another currency, for example older demo data in EGP, must be recreated in the platform currency before they can be paid.
 
 Known gap: the airline **baggage policy** has its own `currency` (price of an extra bag); it is not restricted to the platform currency yet.
+
+### Refunds (PAY-03)
+
+- A refund is a **Refund record** linked to its payment and booking: amount and currency (from our payment record, never from the client, never more than was paid), percentage, reason (`booking_cancelled`, `flight_cancelled`, `late_payment`, `payment_mismatch`), status, Stripe refund id and timestamps. **At most one refund per payment** (unique index), so cancelling twice or retrying never refunds twice; Stripe is also called with the idempotency key `refund-<paymentId>`.
+- **When:** a user cancels a Confirmed booking (the cancellation tier snapshotted on the booking decides the share: the largest tier still met wins; 0% means no refund record, the booking is still Cancelled and the user is notified); an airline or admin cancels a flight (100%); a payment succeeds after its hold expired or with a wrong amount or currency (100% of what Stripe received).
+- **How:** the record is created inside the same transaction as the cancellation, and the Stripe Refunds API is called on the original PaymentIntent after the commit. States: `Pending` -> `Refunded` or `Failed`. Both are final.
+- **Webhooks** (`POST /api/payments/webhook`, signature-checked, idempotent per event id): `refund.updated`, `refund.failed` and `charge.refunded`. Subscribe to them in Stripe (and to `payment_intent.succeeded` / `payment_intent.payment_failed`).
+- **Retry job:** the existing 5-minute scheduler job (`retryPendingRefunds`) resends only refunds Stripe never accepted (network error, process stopped). Each refund is leased before Stripe is called, so two runs at once never send it twice.
+- **A failed refund is final:** the user is notified and nothing retries it automatically (Stripe would return the same failed refund for the same key). It needs **manual handling in the Stripe dashboard**.
+- `GET /api/refunds/:id`: the owner or an admin; anyone else gets 404.
+
+### Flight cancellation by the airline (FLT-06)
+
+`POST /api/flights/:id/cancel` (the airline's moderator or an admin; 403 for anyone else). In **one transaction** (`runBookingTransaction`, all or nothing): the flight becomes Cancelled (it disappears from search and cannot be booked), Pending Payment holds on it are expired and their seats released (their PaymentIntents are cancelled), and every Confirmed booking becomes Cancelled with a **100% refund**. Completed bookings are not touched. Every affected user is notified. Cancelling an already cancelled or departed flight is 409.
+
+### Notifications (GEN-01)
+
+One `NotificationsService.notify(userId, type, payload)` is used for every event: booking confirmed, booking cancelled, refund started / completed / failed, flight schedule changed (departure or arrival time edited; Confirmed bookings only), flight cancelled, account suspended / reactivated, provider deactivated. The payload holds ids, statuses and amounts only. Notifications are sent after the business change has committed and never throw, so a lost notification can never undo a booking or a refund.
+
+`GET /api/notifications` (yours only, newest first, 10 per page, `limit` up to 100), `PATCH /api/notifications/:id/read`, `PATCH /api/notifications/read-all`.
+
+### E-ticket (FLT-23)
+
+`GET /api/bookings/:id/e-ticket` returns a PDF attachment (`e-ticket-<reference>.pdf`) for a **Confirmed or Completed flight booking**: booking reference, passengers, flight number, airline, departure and arrival airports with **local times**, cabin, baggage allowance, total paid and currency. Seats are assigned at check-in (not stored). Owner or admin only; another user's booking or a hotel booking id is 404; any other status is 409. Built with `pdfkit`.
 
 ### Authentication cookies and `COOKIE_SECURE`
 
@@ -273,13 +297,13 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 
 | Mocked | Where | Why |
 | --- | --- | --- |
-| Stripe (`StripeService`) | `test/e2e/helpers/fakes.ts` (`StripeFake`) | no network; models PaymentIntents (create, retrieve, cancel, confirm), records refunds; builds `payment_intent.*` events; accepts only the signature `valid` |
+| Stripe (`StripeService`) | `test/e2e/helpers/fakes.ts` (`StripeFake`) | no network; models PaymentIntents (create, retrieve, cancel, confirm) and refunds (`nextRefundOutcomes` picks succeeded, pending, failed or a network error); builds `payment_intent.*`, `refund.*` and `charge.refunded` events; accepts only the signature `valid` |
 | Exchange rates (`FxRatesService`) | `test/e2e/helpers/fakes.ts` (`FxFake`) | fixed rates |
 | Throttle counter (`ThrottlerStorage`) | `test/e2e/helpers/app.ts` | 100 requests/minute would break lockout and concurrency tests. The real guard still runs |
 
 **Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: accept the policies, open a payment (`POST /api/payments`), then post a fake-signed `payment_intent.succeeded` event to `POST /api/payments/webhook`. Stripe event details live in that helper and in `StripeFake`; `payments.e2e.ts` also builds failure, wrong-amount and late events through the fake.
 
-**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`); shared helpers in `test/e2e/helpers/`:
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`); shared helpers in `test/e2e/helpers/`:
 
 | Helper | Purpose |
 | --- | --- |

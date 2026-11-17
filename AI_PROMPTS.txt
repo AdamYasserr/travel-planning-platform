@@ -59,3 +59,19 @@ Database integration, API behavior, authorization, and booking-related workflows
 ## Pending Integration
 
 Flight cancellation remains dependent on the flight-booking, payment/refund, and notification components being implemented and integrated.
+
+================================================
+Date: 2026-11-17
+Student: Adam
+Tool: Claude Code (Claude Opus 5.5)
+Related Requirements: PAY-03, FLT-06, GEN-01, GEN-05, FLT-23
+
+Prompts used:
+1. "Implement the connected money/cancellation block: refunds (PAY-03), flight cancellation (FLT-06), notifications for all events (GEN-01), and the e-ticket PDF (FLT-23). Plan first, wait for my approval, then implement." (with the full requirement summary, rules and test list)
+2. Approval with decisions: the Refund record has its own id for GET /refunds/:id; keep the cancellation tiers on the booking (0% = no refund record); owner-only customer cancels; failed refunds are final (manual handling in the Stripe dashboard); e-ticket for flights only; pdfkit and @types/pdfkit pinned; schedule-change notifications for Confirmed bookings only; notification page size 10; delete backend/docs/payments.md; reuse the existing scheduler for refund retries and make it safe to run twice; one commit per feature with the full suite after each.
+
+How the output was used:
+1. Added the Refund record and its state machine (Pending, Refunded, Failed), the refund webhooks (refund.updated, refund.failed, charge.refunded) and GET /refunds/:id; customer cancellations and late payments now open refunds through it.
+2. Implemented POST /flights/:id/cancel as one transaction with 100% refunds, a single NotificationsService.notify for every GEN-01 event plus mark-all-read, and the e-ticket PDF.
+3. Reviewed the changes; verified with tsc, unit, integration (including a rollback test) and end-to-end tests, and with mutation checks that break key rules and confirm the tests fail.
+================================================
