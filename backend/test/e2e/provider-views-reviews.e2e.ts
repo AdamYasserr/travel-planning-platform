@@ -70,4 +70,93 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       }
     });
   });
+  describe('grouped booking lists (FLT-25, HTL-20)', () => {
+    const ago = (ms: number) => new Date(Date.now() - ms);
+    const ids = (res: any) => res.body.items.map((b: any) => String(b._id)).sort();
+
+    it('flight bookings: upcoming, past and cancelled hold exactly the right bookings (own only)', async () => {
+      const { flightId } = await createAirlineWithFlight(ctx, { seats: 20 });
+      const user = await createUser(ctx);
+      const other = await createUser(ctx);
+      const make = async () => String((await holdFlight(user, { flightId })).body._id);
+      const confirmed = await make();
+      await confirmBooking(ctx, user, 'flight', confirmed);
+      const live = await make();
+      const lapsed = await make();
+      const expired = await make();
+      const cancelled = await make();
+      const completed = await make();
+      const departed = await make();
+      const fb = model('FlightBooking');
+      await fb.updateOne({ _id: lapsed }, { $set: { holdExpiresAt: ago(1000) } });
+      await fb.updateOne({ _id: expired }, { $set: { status: 'Expired' } });
+      await fb.updateOne({ _id: cancelled }, { $set: { status: 'Cancelled' } });
+      await fb.updateOne({ _id: completed }, { $set: { status: 'Completed' } });
+      await fb.updateOne({ _id: departed }, { $set: { status: 'Confirmed', departureTime: ago(60_000) } });
+      await holdFlight(other, { flightId });
+
+      const list = (q: string) => user.agent.get(`/api/flight-bookings?limit=100${q}`);
+      expect(ids(await list('&group=upcoming'))).toEqual([confirmed, live].sort());
+      expect(ids(await list('&group=past'))).toEqual([completed, departed].sort());
+      expect(ids(await list('&group=cancelled'))).toEqual([lapsed, expired, cancelled].sort());
+      expect((await list('')).body.items).toHaveLength(7);
+      expect((await user.agent.get('/api/flight-bookings?group=soon')).status).toBe(400);
+      expect((await ctx.http().get('/api/flight-bookings?group=upcoming')).status).toBe(401);
+    });
+
+    it('hotel bookings: a stay in progress is upcoming; a stay whose check-out day is over is past', async () => {
+      const { hotelId, roomIds } = await createHotelWithRooms(ctx, { rooms: 6 });
+      const user = await createUser(ctx);
+      const make = async (room: number) => String((await holdHotel(user, { hotelId, roomIds: [roomIds[room]] })).body._id);
+      const confirmed = await make(0);
+      await confirmBooking(ctx, user, 'hotel', confirmed);
+      const inProgress = await make(1);
+      const finished = await make(2);
+      const lapsed = await make(3);
+      const expired = await make(4);
+      const completed = await make(5);
+      const hb = model('HotelBooking');
+      const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+      await hb.updateOne({ _id: inProgress }, { $set: { status: 'Confirmed', checkInDate: new Date(today.getTime() - 86_400_000), checkOutDate: today } });
+      await hb.updateOne({ _id: finished }, { $set: { status: 'Confirmed', checkInDate: new Date(today.getTime() - 3 * 86_400_000), checkOutDate: new Date(today.getTime() - 2 * 86_400_000) } });
+      await hb.updateOne({ _id: lapsed }, { $set: { holdExpiresAt: ago(1000) } });
+      await hb.updateOne({ _id: expired }, { $set: { status: 'Expired' } });
+      await hb.updateOne({ _id: completed }, { $set: { status: 'Completed' } });
+
+      const list = (q: string) => user.agent.get(`/api/hotel-bookings?limit=100&group=${q}`);
+      expect(ids(await list('upcoming'))).toEqual([confirmed, inProgress].sort());
+      expect(ids(await list('past'))).toEqual([finished, completed].sort());
+      expect(ids(await list('cancelled'))).toEqual([lapsed, expired].sort());
+      expect((await user.agent.get('/api/hotel-bookings?group=PAST')).status).toBe(400);
+    });
+  });
+
+  describe('e-ticket alias (FLT-23)', () => {
+    const binary = (res: any, cb: (err: Error | null, body: Buffer) => void) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    };
+    const get = (agent: any, path: string) => agent.get(path).buffer(true).parse(binary);
+
+    it('GET /flight-bookings/:id/e-ticket behaves exactly like GET /bookings/:id/e-ticket', async () => {
+      const { flightId } = await createAirlineWithFlight(ctx, { seats: 4 });
+      const user = await createUser(ctx);
+      const hold = await holdFlight(user, { flightId });
+      const pending = String((await holdFlight(user, { flightId })).body._id);
+      await confirmBooking(ctx, user, 'flight', hold.body._id);
+      for (const base of ['/api/bookings', '/api/flight-bookings']) {
+        const ok = await get(user.agent, `${base}/${hold.body._id}/e-ticket`);
+        expect(ok.status).toBe(200);
+        expect(ok.headers['content-type']).toMatch(/^application\/pdf/);
+        expect(ok.headers['content-disposition']).toBe(`attachment; filename="e-ticket-${hold.body.reference}.pdf"`);
+        expect(ok.body.subarray(0, 5).toString()).toBe('%PDF-');
+        expect((await get(user.agent, `${base}/${pending}/e-ticket`)).status).toBe(409);
+        expect((await get((await createUser(ctx)).agent, `${base}/${hold.body._id}/e-ticket`)).status).toBe(404);
+        expect((await get((await createUser(ctx, 'admin')).agent, `${base}/${hold.body._id}/e-ticket`)).status).toBe(200);
+        expect((await ctx.http().get(`${base}/${hold.body._id}/e-ticket`)).status).toBe(401);
+        expect((await user.agent.get(`${base}/nope/e-ticket`)).status).toBe(400);
+      }
+    });
+  });
 });

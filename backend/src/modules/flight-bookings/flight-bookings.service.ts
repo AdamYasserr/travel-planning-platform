@@ -18,6 +18,7 @@ import {
 } from './dto/flight-bookings.dto';
 import { FlightBookingStatus } from './enums/flight-booking-status.enum';
 import { FlightBooking } from './schemas/flight-booking.schema';
+import { bookingGroupFilter, type BookingGroup } from '../../common/booking/booking-groups';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentBookingType } from '../payments/enums/payment-status.enum';
 import { BOOKING_HOLD_DURATION_MS } from '../../common/booking/booking-hold';
@@ -140,12 +141,12 @@ export class FlightBookingsService {
     }
   }
 
-  async listForUser(userId: string, page = 1, limit = 10) {
+  async listForUser(userId: string, page = 1, limit = 10, group?: BookingGroup) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
     }
     await this.paymentsService.expireFlightHoldsForUser(userId);
-    const filter = { userId: new Types.ObjectId(userId) };
+    const filter = { userId: new Types.ObjectId(userId), ...(group ? bookingGroupFilter('flight', group) : {}) };
     const [items, totalItems] = await Promise.all([
       this.bookingModel
         .find(filter)

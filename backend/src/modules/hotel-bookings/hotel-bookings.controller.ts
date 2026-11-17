@@ -51,6 +51,7 @@ export class HotelBookingsController {
       request.user.userId,
       query.page,
       query.limit,
+      query.group,
     );
   }
 

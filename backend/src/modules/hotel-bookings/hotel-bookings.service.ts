@@ -19,6 +19,7 @@ import {
 } from './schemas/hotel-booking.schema';
 import { Hotel } from '../hotels/schemas/hotel.schema';
 import { Room } from '../hotels/schemas/room.schema';
+import { bookingGroupFilter, type BookingGroup } from '../../common/booking/booking-groups';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentBookingType } from '../payments/enums/payment-status.enum';
 import { BOOKING_HOLD_DURATION_MS } from '../../common/booking/booking-hold';
@@ -196,9 +197,9 @@ export class HotelBookingsService {
     return booking;
   }
 
-  async listForUser(userId: string, page = 1, limit = 10) {
+  async listForUser(userId: string, page = 1, limit = 10, group?: BookingGroup) {
     const skip = (page - 1) * limit;
-    const filter = { userId: new Types.ObjectId(userId) };
+    const filter = { userId: new Types.ObjectId(userId), ...(group ? bookingGroupFilter('hotel', group) : {}) };
     const [items, totalItems] = await Promise.all([
       this.bookingModel
         .find(filter)

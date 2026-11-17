@@ -1,10 +1,12 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
+import { BOOKING_GROUPS, type BookingGroup } from '../../../common/booking/booking-groups';
 import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
   IsDateString,
+  IsIn,
   IsInt,
   IsMongoId,
   IsOptional,
@@ -73,6 +75,11 @@ export class HotelBookingListQueryDto {
   @Min(1)
   @Max(100)
   limit = 10; // GEN-05
+
+  @ApiPropertyOptional({ enum: BOOKING_GROUPS, description: 'upcoming, past or cancelled (FLT-25 / HTL-20). Omit for all bookings.' })
+  @IsOptional()
+  @IsIn(BOOKING_GROUPS)
+  group?: BookingGroup;
 }
 
 export class HotelBookingIdParamDto {

@@ -8,7 +8,8 @@ type AuthenticatedRequest = Request & { user: { userId: string; role?: string } 
 
 @ApiTags('Flight Bookings')
 @ApiCookieAuth('access_token')
-@Controller('bookings')
+// FLT-23: main path GET /bookings/:id/e-ticket; GET /flight-bookings/:id/e-ticket is an alias (same handler).
+@Controller(['bookings', 'flight-bookings'])
 export class ETicketController {
   constructor(private readonly tickets: ETicketService) {}
 
@@ -17,7 +18,7 @@ export class ETicketController {
   @ApiOperation({
     summary: 'Download the e-ticket PDF of a flight booking (owner or admin)',
     description:
-      'FLT-23. Booking reference, passengers, flight number, airline, airports with local times, cabin, baggage and total paid. Only for a Confirmed or Completed flight booking (409 otherwise). Hotel booking ids and other users\' bookings are 404.',
+      'FLT-23. Also served at GET /flight-bookings/:id/e-ticket (alias, identical behaviour). Booking reference, passengers, flight number, airline, airports with local times, cabin, baggage and total paid. Only for a Confirmed or Completed flight booking (409 otherwise). Hotel booking ids and other users\' bookings are 404.',
   })
   @ApiResponse({ status: 200, description: 'application/pdf, sent as an attachment' })
   async download(@Param('id') id: string, @Req() request: AuthenticatedRequest) {

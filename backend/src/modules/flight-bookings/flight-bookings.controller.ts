@@ -62,6 +62,7 @@ export class FlightBookingsController {
       request.user.userId,
       query.page,
       query.limit,
+      query.group,
     );
   }
 
