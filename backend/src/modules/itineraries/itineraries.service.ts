@@ -468,6 +468,71 @@ export class ItinerariesService {
     return this.present(itinerary, itinerary.displayCurrency);
   }
 
+  /** GET /itineraries/:id/budget-summary: the budgetSummary section of the same view as get(). */
+  async budgetSummary(ownerId: string, id: string, displayCurrency?: string) {
+    const view = await this.get(ownerId, id, displayCurrency);
+    return { itineraryId: id, ...view.budgetSummary };
+  }
+
+  // The routes /activities/:id, /budgets/:id and /transport-costs/:id carry no itinerary id.
+  // These resolve the owning itinerary (restricted to the caller's own itineraries, so another
+  // user's id is a 404 exactly like the nested routes) and delegate to the existing methods.
+  async updateActivityById(ownerId: string, activityId: string, dto: UpdateItineraryActivityDto) {
+    const { itineraryId, dayId } = await this.locateDayItem(ownerId, "activities", activityId);
+    return this.updateActivity(ownerId, itineraryId, dayId, activityId, dto);
+  }
+
+  async removeActivityById(ownerId: string, activityId: string) {
+    const { itineraryId, dayId } = await this.locateDayItem(ownerId, "activities", activityId);
+    return this.removeActivity(ownerId, itineraryId, dayId, activityId);
+  }
+
+  async updateBudgetEntryById(ownerId: string, entryId: string, dto: UpdateBudgetEntryDto) {
+    const { itineraryId, dayId } = await this.locateDayItem(ownerId, "budgets", entryId);
+    return this.updateBudgetEntry(ownerId, itineraryId, dayId, entryId, dto);
+  }
+
+  async removeBudgetEntryById(ownerId: string, entryId: string) {
+    const { itineraryId, dayId } = await this.locateDayItem(ownerId, "budgets", entryId);
+    return this.removeBudgetEntry(ownerId, itineraryId, dayId, entryId);
+  }
+
+  async updateTransportCostById(ownerId: string, costId: string, dto: UpdateTransportCostDto) {
+    const itineraryId = await this.locateTransportCost(ownerId, costId);
+    return this.updateTransportCost(ownerId, itineraryId, costId, dto);
+  }
+
+  async removeTransportCostById(ownerId: string, costId: string) {
+    const itineraryId = await this.locateTransportCost(ownerId, costId);
+    return this.removeTransportCost(ownerId, itineraryId, costId);
+  }
+
+  private async locateDayItem(ownerId: string, kind: "activities" | "budgets", itemId: string) {
+    const itinerary: any = await this.itineraries
+      .findOne({
+        ownerId: this.objectId(ownerId),
+        [`days.${kind}._id`]: this.objectId(itemId),
+      })
+      .select({ days: 1 });
+    const day = (itinerary?.days ?? []).find((candidate: any) =>
+      (candidate[kind] ?? []).some((item: any) => String(item._id) === itemId),
+    );
+    if (!itinerary || !day)
+      throw new NotFoundException(kind === "activities" ? "Activity not found" : "Budget entry not found");
+    return { itineraryId: String(itinerary._id), dayId: String(day._id) };
+  }
+
+  private async locateTransportCost(ownerId: string, costId: string) {
+    const itinerary: any = await this.itineraries
+      .findOne({
+        ownerId: this.objectId(ownerId),
+        "transportCosts._id": this.objectId(costId),
+      })
+      .select({ _id: 1 });
+    if (!itinerary) throw new NotFoundException("Transport cost not found");
+    return String(itinerary._id);
+  }
+
   private async present(itinerary: any, currency: string) {
     const entries = (itinerary.days ?? []).flatMap(
       (day: any) => day.budgets ?? [],

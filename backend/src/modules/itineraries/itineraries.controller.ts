@@ -82,7 +82,21 @@ export class ItinerariesController {
     return this.itineraries.addDay(req.user.userId, id, dto);
   }
 
+  @Patch(":id/days/reorder")
+  @ApiOperation({ summary: "Reorder the days of an itinerary" })
+  reorderDaysMain(
+    @Param("id") id: string,
+    @Body() dto: ReorderItineraryDaysDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.reorderDays(req.user.userId, id, dto);
+  }
+
   @Patch(":id/days/order")
+  @ApiOperation({
+    summary: "Reorder the days of an itinerary",
+    description: "Legacy alias of PATCH /itineraries/:id/days/reorder.",
+  })
   reorderDays(
     @Param("id") id: string,
     @Body() dto: ReorderItineraryDaysDto,
@@ -121,6 +135,10 @@ export class ItinerariesController {
   }
 
   @Patch(":id/days/:dayId/activities/:activityId")
+  @ApiOperation({
+    summary: "Update an activity",
+    description: "Legacy alias of PATCH /activities/:id.",
+  })
   updateActivity(
     @Param("id") id: string,
     @Param("dayId") dayId: string,
@@ -138,6 +156,10 @@ export class ItinerariesController {
   }
 
   @Delete(":id/days/:dayId/activities/:activityId")
+  @ApiOperation({
+    summary: "Delete an activity",
+    description: "Legacy alias of DELETE /activities/:id.",
+  })
   removeActivity(
     @Param("id") id: string,
     @Param("dayId") dayId: string,
@@ -152,7 +174,22 @@ export class ItinerariesController {
     );
   }
 
+  @Post(":id/days/:dayId/budgets")
+  @ApiOperation({ summary: "Add a budget entry to a day" })
+  addBudget(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Body() dto: CreateBudgetEntryDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.addBudgetEntry(req.user.userId, id, dayId, dto);
+  }
+
   @Post(":id/days/:dayId/budget-entries")
+  @ApiOperation({
+    summary: "Add a budget entry to a day",
+    description: "Legacy alias of POST /itineraries/:id/days/:dayId/budgets.",
+  })
   addBudgetEntry(
     @Param("id") id: string,
     @Param("dayId") dayId: string,
@@ -163,6 +200,10 @@ export class ItinerariesController {
   }
 
   @Patch(":id/days/:dayId/budget-entries/:entryId")
+  @ApiOperation({
+    summary: "Update a budget entry",
+    description: "Legacy alias of PATCH /budgets/:id.",
+  })
   updateBudgetEntry(
     @Param("id") id: string,
     @Param("dayId") dayId: string,
@@ -180,6 +221,10 @@ export class ItinerariesController {
   }
 
   @Delete(":id/days/:dayId/budget-entries/:entryId")
+  @ApiOperation({
+    summary: "Delete a budget entry",
+    description: "Legacy alias of DELETE /budgets/:id.",
+  })
   removeBudgetEntry(
     @Param("id") id: string,
     @Param("dayId") dayId: string,
@@ -204,6 +249,10 @@ export class ItinerariesController {
   }
 
   @Patch(":id/transport-costs/:costId")
+  @ApiOperation({
+    summary: "Update a transport cost",
+    description: "Legacy alias of PATCH /transport-costs/:id.",
+  })
   updateTransportCost(
     @Param("id") id: string,
     @Param("costId") costId: string,
@@ -219,12 +268,29 @@ export class ItinerariesController {
   }
 
   @Delete(":id/transport-costs/:costId")
+  @ApiOperation({
+    summary: "Delete a transport cost",
+    description: "Legacy alias of DELETE /transport-costs/:id.",
+  })
   removeTransportCost(
     @Param("id") id: string,
     @Param("costId") costId: string,
     @Req() req: AuthenticatedRequest,
   ) {
     return this.itineraries.removeTransportCost(req.user.userId, id, costId);
+  }
+
+  @Get(":id/budget-summary")
+  @ApiOperation({
+    summary: "Get the planned and actual budget totals of an itinerary",
+    description: "The same totals as the budgetSummary section of GET /itineraries/:id. Optional `currency` converts the totals.",
+  })
+  budgetSummary(
+    @Param("id") id: string,
+    @Req() req: AuthenticatedRequest,
+    @Query("currency") currency?: string,
+  ) {
+    return this.itineraries.budgetSummary(req.user.userId, id, currency);
   }
 
   @Post(":id/bookings")

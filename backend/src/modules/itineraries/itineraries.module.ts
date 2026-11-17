@@ -11,6 +11,7 @@ import {
 } from "../hotel-bookings/schemas/hotel-booking.schema";
 import { ReferenceDataModule } from "../reference-data/reference-data.module";
 import { ItinerariesController } from "./itineraries.controller";
+import { ItineraryItemsController } from "./itinerary-items.controller";
 import { ItinerariesService } from "./itineraries.service";
 import { Itinerary, ItinerarySchema } from "./schemas/itinerary.schema";
 
@@ -24,7 +25,7 @@ import { Itinerary, ItinerarySchema } from "./schemas/itinerary.schema";
       { name: FlightBooking.name, schema: FlightBookingSchema },
     ]),
   ],
-  controllers: [ItinerariesController],
+  controllers: [ItinerariesController, ItineraryItemsController],
   providers: [ItinerariesService],
   exports: [ItinerariesService],
 })
