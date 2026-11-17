@@ -20,6 +20,7 @@ import { HotelBookingsController } from './modules/hotel-bookings/hotel-bookings
 import { HotelBookingsService } from './modules/hotel-bookings/hotel-bookings.service';
 import { HotelsController } from './modules/hotels/hotels.controller';
 import { HotelsService } from './modules/hotels/hotels.service';
+import { HotelSearchService } from './modules/hotels/hotel-search.service';
 import { ItinerariesController } from './modules/itineraries/itineraries.controller';
 import { ItineraryItemsController } from './modules/itineraries/itinerary-items.controller';
 import { ItinerariesService } from './modules/itineraries/itineraries.service';
@@ -72,6 +73,7 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
         { provide: ItinerariesService, useValue: itineraries },
         { provide: PaymentsService, useValue: payments },
         { provide: HotelsService, useValue: hotels },
+        { provide: HotelSearchService, useValue: {} },
         { provide: AuthService, useValue: auth },
         { provide: ConfigService, useValue: { get: () => undefined } },
         { provide: APP_GUARD, useClass: FakeAuthGuard },

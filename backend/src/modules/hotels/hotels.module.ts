@@ -9,6 +9,9 @@ import { Room, RoomSchema } from './schemas/room.schema';
 import { HotelBookingsModule } from '../hotel-bookings/hotel-bookings.module';
 import { Review, ReviewSchema } from './schemas/review.schema';
 import { ReferenceDataModule } from '../reference-data/reference-data.module';
+import { HotelSearchService } from './hotel-search.service';
+import { City, CitySchema } from '../reference-data/schemas/city.schema';
+import { Country, CountrySchema } from '../reference-data/schemas/country.schema';
 
 @Module({
   imports: [
@@ -17,12 +20,14 @@ import { ReferenceDataModule } from '../reference-data/reference-data.module';
       { name: Room.name, schema: RoomSchema },
       { name: User.name, schema: UserSchema },
       { name: Review.name, schema: ReviewSchema },
+      { name: City.name, schema: CitySchema },
+      { name: Country.name, schema: CountrySchema },
     ]),
     HotelBookingsModule,
     ReferenceDataModule,
   ],
   controllers: [HotelsController],
-  providers: [HotelsService],
-  exports: [MongooseModule],
+  providers: [HotelsService, HotelSearchService],
+  exports: [MongooseModule, HotelsService, HotelSearchService],
 })
 export class HotelsModule {}

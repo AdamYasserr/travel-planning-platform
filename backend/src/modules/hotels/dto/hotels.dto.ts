@@ -14,13 +14,13 @@ import {
   Min,
   ValidateNested,
   ArrayMinSize,
-  IsDateString,
   IsPositive,
   Validate,
   ValidatorConstraint,
   ValidatorConstraintInterface,
     ValidationArguments,
 } from 'class-validator';
+import { IsCalendarDate } from '../../../common/validators/calendar-date.decorator';
 import {
   ApiProperty,
   ApiPropertyOptional,
@@ -172,14 +172,14 @@ export class RoomDateRangeDto {
     description: 'First bookable date, inclusive, in YYYY-MM-DD format',
     example: '2026-12-01',
   })
-  @IsDateString({ strict: true })
+  @IsCalendarDate()
   startDate: string;
 
   @ApiProperty({
     description: 'End date, exclusive, in YYYY-MM-DD format',
     example: '2026-12-10',
   })
-  @IsDateString({ strict: true })
+  @IsCalendarDate()
   endDate: string;
 }
 
@@ -350,14 +350,14 @@ export class RoomStatusQueryDto {
     description: 'First date to check, inclusive, in YYYY-MM-DD format',
     example: '2026-12-01',
   })
-  @IsDateString({ strict: true })
+  @IsCalendarDate()
   startDate: string;
 
   @ApiProperty({
     description: 'Last date to check, exclusive, in YYYY-MM-DD format',
     example: '2026-12-05',
   })
-  @IsDateString({ strict: true })
+  @IsCalendarDate()
   @Validate(RoomStatusEndAfterStartConstraint)
   endDate: string;
 }
@@ -397,7 +397,7 @@ export class HotelDetailsQueryDto {
     example: '2026-12-01',
   })
   @IsOptional()
-  @IsDateString({ strict: true })
+  @IsCalendarDate()
   @Validate(HotelDetailsDatePairConstraint)
   checkInDate?: string;
 
@@ -406,7 +406,7 @@ export class HotelDetailsQueryDto {
     example: '2026-12-05',
   })
   @IsOptional()
-  @IsDateString({ strict: true })
+  @IsCalendarDate()
   @Validate(HotelDetailsDatePairConstraint)
   checkOutDate?: string;
 }

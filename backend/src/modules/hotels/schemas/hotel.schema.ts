@@ -90,8 +90,18 @@ export class Hotel {
 
   @Prop({ type: Boolean, default: true, index: true })
   isActive: boolean;
+
+  /** Stored average of visible review ratings (1-5); null = unrated. Kept up to date by HotelsService.refreshRating. */
+  @Prop({ type: Number, default: null, min: 1, max: 5 })
+  averageRating: number | null;
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  ratingCount: number;
 }
 
 export const HotelSchema = SchemaFactory.createForClass(Hotel);
 
 HotelSchema.index({ cityId: 1, countryId: 1, isActive: 1 });
+// HTL-11/12 search: the hotels of one city / one country, active, optionally by rating.
+HotelSchema.index({ isActive: 1, cityId: 1, averageRating: -1 });
+HotelSchema.index({ isActive: 1, countryId: 1, averageRating: -1 });

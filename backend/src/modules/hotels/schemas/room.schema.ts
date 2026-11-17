@@ -132,3 +132,5 @@ export class Room {
 export const RoomSchema = SchemaFactory.createForClass(Room);
 
 RoomSchema.index({ hotelId: 1, name: 1 }, { unique: true });
+// HTL-11/15: the active rooms of a set of hotels.
+RoomSchema.index({ hotelId: 1, isActive: 1 });
