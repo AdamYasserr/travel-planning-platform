@@ -92,6 +92,30 @@ Production:
 npm run start:prod
 ```
 
+### Reference data import (GEN-12)
+
+Countries, cities, airports and attractions come from the official CSV datasets in
+`backend/data/reference/` (`Countries.csv`, `Cities.csv`, `Airports.csv`, `Attractions.csv`).
+Import them once after configuring `MONGODB_URI` in `.env`, and again whenever the files change:
+
+```bash
+cd backend
+npm run seed:reference                 # reads data/reference
+npm run seed:reference -- ./other-dir  # or a custom folder (also: REFERENCE_DATA_DIR=...)
+```
+
+- Required headers: `code,name,currency` / `city_id,name,country_code` /
+  `iata_code,name,city_id,country_code,time_zone` / `attraction_id,name,city_id`.
+  A missing column aborts the import and names the file and column.
+- Invalid rows (empty IDs, unknown country/city, city/country mismatch, bad IANA `time_zone`,
+  non-3-letter currency, duplicate IDs) are skipped and reported as `File.csv:<line>`.
+- Safe to re-run: records are upserted by dataset ID, in the order countries, cities, airports,
+  attractions. The summary prints inserted / updated / unchanged / skipped per file.
+- Everywhere else in the API a country is referenced by its `code` (`EG`), a city by `city_id`
+  (`cairo`), an airport by `iata_code` (`CAI`) and an attraction by `attraction_id` (`att-1`);
+  unknown IDs are rejected with `400`. Supported currencies are the distinct `currency` values
+  of `Countries.csv` (`GET /api/currencies`). Run the import before creating hotels, flights or itineraries.
+
 ## 8. Testing
 
 Run unit tests:
