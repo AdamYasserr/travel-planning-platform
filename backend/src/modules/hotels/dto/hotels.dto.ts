@@ -242,6 +242,17 @@ export class CreateRoomDto {
   @IsPositive()
   pricePerNight: number;
 
+  @ApiProperty({
+    description: 'ISO 4217 currency code used for this room rate',
+    example: 'EGP',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @IsString()
+  @Matches(/^[A-Z]{3}$/)
+  currency: string;
+
   @ApiPropertyOptional({
     type: [RoomDateRangeDto],
     example: [{ startDate: '2026-12-01', endDate: '2026-12-10' }],
@@ -270,7 +281,7 @@ export class SetRoomAvailabilityDto {
   export class UpdateRoomDto extends PartialType(
   PickType(
     CreateRoomDto,
-    ['beds', 'maxOccupancy', 'pricePerNight'] as const,
+    ['beds', 'maxOccupancy', 'pricePerNight', 'currency'] as const,
   ),
 ) {}
 

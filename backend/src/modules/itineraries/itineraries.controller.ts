@@ -1,0 +1,252 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from "@nestjs/common";
+import { ApiCookieAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import type { Request } from "express";
+import {
+  CreateBudgetEntryDto,
+  CreateItineraryActivityDto,
+  CreateItineraryDayDto,
+  CreateItineraryDto,
+  CreateTransportCostDto,
+  LinkBookingsDto,
+  ReorderItineraryDaysDto,
+  UpdateBudgetEntryDto,
+  UpdateItineraryActivityDto,
+  UpdateItineraryDayDto,
+  UpdateItineraryDto,
+  UpdateTransportCostDto,
+} from "./dto/itineraries.dto";
+import { ItinerariesService } from "./itineraries.service";
+
+type AuthenticatedRequest = Request & { user: { userId: string } };
+
+@ApiTags("Itineraries")
+@ApiCookieAuth("access_token")
+@Controller("itineraries")
+export class ItinerariesController {
+  constructor(private readonly itineraries: ItinerariesService) {}
+
+  @Post()
+  @ApiOperation({ summary: "Create a private itinerary" })
+  create(@Body() dto: CreateItineraryDto, @Req() req: AuthenticatedRequest) {
+    return this.itineraries.create(req.user.userId, dto);
+  }
+
+  @Get()
+  @ApiOperation({ summary: "List the signed-in user’s itineraries" })
+  list(@Req() req: AuthenticatedRequest, @Query("currency") currency?: string) {
+    return this.itineraries.list(req.user.userId, currency);
+  }
+
+  @Get(":id")
+  @ApiOperation({
+    summary: "Get itinerary details and converted budget totals",
+  })
+  get(
+    @Param("id") id: string,
+    @Req() req: AuthenticatedRequest,
+    @Query("currency") currency?: string,
+  ) {
+    return this.itineraries.get(req.user.userId, id, currency);
+  }
+
+  @Patch(":id")
+  update(
+    @Param("id") id: string,
+    @Body() dto: UpdateItineraryDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.update(req.user.userId, id, dto);
+  }
+
+  @Delete(":id")
+  remove(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
+    return this.itineraries.remove(req.user.userId, id);
+  }
+
+  @Post(":id/days")
+  addDay(
+    @Param("id") id: string,
+    @Body() dto: CreateItineraryDayDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.addDay(req.user.userId, id, dto);
+  }
+
+  @Patch(":id/days/order")
+  reorderDays(
+    @Param("id") id: string,
+    @Body() dto: ReorderItineraryDaysDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.reorderDays(req.user.userId, id, dto);
+  }
+
+  @Patch(":id/days/:dayId")
+  updateDay(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Body() dto: UpdateItineraryDayDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.updateDay(req.user.userId, id, dayId, dto);
+  }
+
+  @Delete(":id/days/:dayId")
+  removeDay(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.removeDay(req.user.userId, id, dayId);
+  }
+
+  @Post(":id/days/:dayId/activities")
+  addActivity(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Body() dto: CreateItineraryActivityDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.addActivity(req.user.userId, id, dayId, dto);
+  }
+
+  @Patch(":id/days/:dayId/activities/:activityId")
+  updateActivity(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Param("activityId") activityId: string,
+    @Body() dto: UpdateItineraryActivityDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.updateActivity(
+      req.user.userId,
+      id,
+      dayId,
+      activityId,
+      dto,
+    );
+  }
+
+  @Delete(":id/days/:dayId/activities/:activityId")
+  removeActivity(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Param("activityId") activityId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.removeActivity(
+      req.user.userId,
+      id,
+      dayId,
+      activityId,
+    );
+  }
+
+  @Post(":id/days/:dayId/budget-entries")
+  addBudgetEntry(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Body() dto: CreateBudgetEntryDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.addBudgetEntry(req.user.userId, id, dayId, dto);
+  }
+
+  @Patch(":id/days/:dayId/budget-entries/:entryId")
+  updateBudgetEntry(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Param("entryId") entryId: string,
+    @Body() dto: UpdateBudgetEntryDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.updateBudgetEntry(
+      req.user.userId,
+      id,
+      dayId,
+      entryId,
+      dto,
+    );
+  }
+
+  @Delete(":id/days/:dayId/budget-entries/:entryId")
+  removeBudgetEntry(
+    @Param("id") id: string,
+    @Param("dayId") dayId: string,
+    @Param("entryId") entryId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.removeBudgetEntry(
+      req.user.userId,
+      id,
+      dayId,
+      entryId,
+    );
+  }
+
+  @Post(":id/transport-costs")
+  addTransportCost(
+    @Param("id") id: string,
+    @Body() dto: CreateTransportCostDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.addTransportCost(req.user.userId, id, dto);
+  }
+
+  @Patch(":id/transport-costs/:costId")
+  updateTransportCost(
+    @Param("id") id: string,
+    @Param("costId") costId: string,
+    @Body() dto: UpdateTransportCostDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.updateTransportCost(
+      req.user.userId,
+      id,
+      costId,
+      dto,
+    );
+  }
+
+  @Delete(":id/transport-costs/:costId")
+  removeTransportCost(
+    @Param("id") id: string,
+    @Param("costId") costId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.removeTransportCost(req.user.userId, id, costId);
+  }
+
+  @Post(":id/bookings")
+  linkBookings(
+    @Param("id") id: string,
+    @Body() dto: LinkBookingsDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.linkBookings(
+      req.user.userId,
+      id,
+      dto.hotelBookingIds,
+      dto.flightBookingIds,
+    );
+  }
+
+  @Delete(":id/bookings/:bookingId")
+  unlinkBooking(
+    @Param("id") id: string,
+    @Param("bookingId") bookingId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.itineraries.unlinkBooking(req.user.userId, id, bookingId);
+  }
+}

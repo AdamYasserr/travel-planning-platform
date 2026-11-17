@@ -35,6 +35,15 @@ export class HotelBookingRoom {
   pricePerNight: number;
 
   @Prop({
+    type: String,
+    required: true,
+    uppercase: true,
+    trim: true,
+    match: /^[A-Z]{3}$/,
+  })
+  currency: string;
+
+  @Prop({
     type: Number,
     required: true,
     min: 0,
@@ -131,6 +140,15 @@ export class HotelBooking {
 
   @Prop({ type: Number, required: true, min: 0.01 })
   totalPrice: number;
+
+  @Prop({
+    type: String,
+    required: true,
+    uppercase: true,
+    trim: true,
+    match: /^[A-Z]{3}$/,
+  })
+  currency: string;
 
   @Prop({
     type: String,

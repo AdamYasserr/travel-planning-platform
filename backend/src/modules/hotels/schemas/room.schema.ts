@@ -96,6 +96,15 @@ export class Room {
   pricePerNight: number;
 
   @Prop({
+    type: String,
+    required: true,
+    uppercase: true,
+    trim: true,
+    match: /^[A-Z]{3}$/,
+  })
+  currency: string;
+
+  @Prop({
     type: [RoomDateRangeSchema],
     default: [],
     validate: {

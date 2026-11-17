@@ -11,8 +11,12 @@
 - **Pending integration:** Flight Booking and Hotel Booking developers must
   revoke/cancel their future booking records when account deactivation is
   consumed. Their schemas are currently empty, so no booking changes were made.
-- **Not implemented:** report moderation, and media ownership checks inside
-  Blog/Itinerary modules until those modules provide their schemas/services.
+- **Implemented after the initial test-case draft:** blog/community posts,
+  comments, likes, post media ownership, report moderation, and moderation
+  audit records. Their MongoDB-backed behavior is covered by unit tests but
+  has not been manually runtime-tested.
+- **Still pending:** itinerary image ownership/count integration. Itinerary
+  media uploads remain disabled.
 
 All commands below assume `cd backend`, a running API on port 3000, valid
 environment variables, and cookies obtained from login.
@@ -138,12 +142,13 @@ fails, the database error remains the response cause and cleanup is logged
 without a path. Images with valid signatures but truncated/corrupt encoded
 data are rejected by full decoding. No dimension or total-pixel limit is
 applied because GEN-08 specifies only format and file-size limits.
-POST, ITINERARY, and COMMENT uploads currently return `501` because their
-schemas/services are empty; they must not be accepted until target ownership
-and visibility contracts are integrated. The official limits of five images
-per post, five per itinerary activity, five per hotel, and one airline logo
-remain blocked until those modules expose implemented ownership and media
-count contracts.
+POST and COMMENT uploads now require an existing owner-authorized target;
+post media is limited to five images. Published post and comment media under a
+published post can be fetched publicly; drafts, hidden posts, deleted content,
+and non-visible comments are not public. ITINERARY uploads still return `501`
+because itinerary activity media ownership/count rules are not implemented.
+The five-image-per-itinerary-activity limit, five-per-hotel limit, and one
+airline-logo limit remain tracked separately.
 
 ```bash
 # Invalid signature despite an allowed-looking name and MIME type
@@ -153,7 +158,7 @@ curl -i -b cookies.txt -X POST \
   -F 'targetType=profile' \
   http://localhost:3000/api/media
 
-# Profile target IDs are forbidden; content targets are integration-pending
+# Profile target IDs are forbidden; the post target must exist and belong to the uploader
 curl -i -b cookies.txt -X POST \
   -F 'file=@./test-image.png;type=image/png' \
   -F 'targetType=profile' -F 'targetId=507f1f77bcf86cd799439011' \
@@ -164,9 +169,9 @@ curl -i -b cookies.txt -X POST \
   http://localhost:3000/api/media
 ```
 
-Expected: malformed content/profile target ID is `400`; content upload is
-`501` pending target-module integration. These endpoints were not runtime
-tested.
+Expected: profile target ID is `400`; post media succeeds only for an owned
+post and is limited to five images. Itinerary target uploads remain `501`.
+These commands are documented cases and were not run manually for this task.
 
 ```bash
 # Valid header but truncated JPEG

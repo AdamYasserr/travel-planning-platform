@@ -1,8 +1,9 @@
 
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
 import { AirportsService } from './airports.service';
+import { AirportQueryDto } from './dto/airport-query.dto';
 import { Public } from '../../common/decorators/public.decorator';
 
 @ApiTags('Airports')
@@ -16,7 +17,7 @@ export class AirportsController {
   @Get()
   @Public()
   @ApiOperation({ summary: 'List available airports' })
-  async findAll() {
-    return this.airportsService.findAll();
+  async findAll(@Query() query: AirportQueryDto) {
+    return this.airportsService.findAll(query);
   }
 }

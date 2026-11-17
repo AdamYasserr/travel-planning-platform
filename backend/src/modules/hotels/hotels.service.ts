@@ -318,7 +318,7 @@ async getDetails(
   }
 
   const reviews = await this.reviewModel
-    .find({ hotelId: hotelObjectId })
+    .find({ hotelId: hotelObjectId, isHidden: { $ne: true } })
     .sort({ createdAt: -1 })
     .lean()
     .exec();

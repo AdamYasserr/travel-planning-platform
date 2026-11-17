@@ -9,6 +9,12 @@ export enum ReportStatus {
   RESOLVED = 'resolved',
 }
 
+export enum ReportModerationAction {
+  DISMISS = 'dismiss',
+  HIDE = 'hide',
+  DELETE = 'delete',
+}
+
 @Schema({ timestamps: true })
 export class Report {
   declare createdAt: Date;
@@ -43,6 +49,22 @@ export class Report {
     default: ReportStatus.OPEN,
   })
   status: ReportStatus;
+
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User', default: null })
+  moderatedBy?: Types.ObjectId | null;
+
+  @Prop({ type: Date, default: null })
+  moderatedAt?: Date | null;
+
+  @Prop({
+    type: String,
+    enum: Object.values(ReportModerationAction),
+    default: null,
+  })
+  moderationAction?: ReportModerationAction | null;
+
+  @Prop({ type: String, trim: true, maxlength: 1000, default: '' })
+  moderationNote: string;
 }
 
 export const ReportSchema = SchemaFactory.createForClass(Report);

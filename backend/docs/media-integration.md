@@ -11,7 +11,7 @@ itinerary, and profile features must not write files directly.
   additional files and oversized multipart payloads before service handling.
   The service also validates the image signature and basic structure, so a
   filename or client MIME type cannot make arbitrary bytes an image.
-- `targetType`: `profile`, `post`, `itinerary`, or `comment`.
+- `targetType`: `profile`, `hotel`, `airline`, `post`, `itinerary`, or `comment`.
 - `targetId`: a MongoDB ObjectId for content targets. It is optional only for
   `profile`.
 
@@ -21,20 +21,17 @@ credential.
 
 ## Reading
 
-`GET /api/media/:id/content` is authenticated and owner-scoped for profile
-media. Cross-user access is rejected and profile media is never public.
-Content media upload and retrieval are intentionally not enabled yet:
-the current Blog, Itinerary, and Comment schema/service files are empty, so
-there is no verified target owner or visibility field to query. Those modules
-must provide the following integration contract before attachment routes are
-enabled:
+`GET /api/media/:id/content` is authenticated and owner-scoped for profile,
+post, and comment media. Cross-user access is rejected. `POST /api/posts/:id/images`
+and `DELETE /api/posts/:id/images/:imageId` provide the BLG-10 post attachment
+routes. Post authors may attach up to five images; the limit is enforced with
+an atomic post update. Comment uploads are also author-scoped.
 
-1. A target lookup by ObjectId that returns existence, owner ID, and visibility.
-2. An authorization method defining who may attach media (normally the target
-   owner/author).
-3. A read-authorization method defining whether a requester may view the
-   target and its media.
-4. A delete/rollback hook or transaction strategy for target and media changes.
+`GET /api/media/public/:id/content` serves hotel/airline media and media for
+published posts or visible comments on published posts. The service rechecks
+target visibility on each read. Draft, hidden, and deleted post media is not
+publicly readable. Profile media remains private. Itinerary uploads remain
+disabled until the itinerary image ownership/count contract is implemented.
 
 ## Storage configuration
 

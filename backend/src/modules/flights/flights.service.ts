@@ -18,6 +18,7 @@ import { Airline } from '../airlines/schemas/airline.schema';
 import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { Airport } from '../airports/schemas/airport.schema';
+import { isValidIanaTimeZone, parseFlightInstant } from './timezone.util';
 
 import {
   CreateFlightDto,
@@ -93,8 +94,13 @@ private readonly airportModel: Model<Airport>,
       );
     }
 
-    const departureTime = new Date(dto.departureTime);
-    const arrivalTime = new Date(dto.arrivalTime);
+    const [departureAirport, arrivalAirport] = await Promise.all([
+      this.airportModel.findOne({ iataCode: dto.departureAirport.trim().toUpperCase() }).select('timeZone').lean().exec(),
+      this.airportModel.findOne({ iataCode: dto.arrivalAirport.trim().toUpperCase() }).select('timeZone').lean().exec(),
+    ]);
+    if (!departureAirport || !arrivalAirport) throw new NotFoundException('Flight airport was not found');
+    const departureTime = parseFlightInstant(dto.departureTime, departureAirport.timeZone);
+    const arrivalTime = parseFlightInstant(dto.arrivalTime, arrivalAirport.timeZone);
 
     if (
       !Number.isFinite(departureTime.getTime()) ||
@@ -176,12 +182,16 @@ return this.toLocalFlightResponse(flight);
       dto.arrivalAirport ?? flight.arrivalAirport
     ).trim().toUpperCase();
 
+    const [departureAirportRecord, arrivalAirportRecord] = await Promise.all([
+      this.airportModel.findOne({ iataCode: departureAirport }).select('timeZone').lean().exec(),
+      this.airportModel.findOne({ iataCode: arrivalAirport }).select('timeZone').lean().exec(),
+    ]);
+    if (!departureAirportRecord || !arrivalAirportRecord) throw new NotFoundException('Flight airport was not found');
     const departureTime = dto.departureTime
-      ? new Date(dto.departureTime)
+      ? parseFlightInstant(dto.departureTime, departureAirportRecord.timeZone)
       : flight.departureTime;
-
     const arrivalTime = dto.arrivalTime
-      ? new Date(dto.arrivalTime)
+      ? parseFlightInstant(dto.arrivalTime, arrivalAirportRecord.timeZone)
       : flight.arrivalTime;
 
     if (departureAirport === arrivalAirport) {
@@ -321,6 +331,7 @@ return this.toLocalFlightResponse(flight);
   }
 
   const formatLocalDateTime = (date: Date, timeZone: string): string => {
+    if (!isValidIanaTimeZone(timeZone)) throw new NotFoundException('Airport has an invalid IANA time zone');
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone,
       year: 'numeric',

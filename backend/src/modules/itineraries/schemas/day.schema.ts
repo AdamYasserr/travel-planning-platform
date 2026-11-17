@@ -1,10 +1,7 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Schema as MongooseSchema, Types } from 'mongoose';
-import {
-  ItineraryActivity,
-  ItineraryActivitySchema,
-} from './activity.schema';
-import { BudgetEntry, BudgetEntrySchema } from './budget.schema';
+import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
+import { Schema as MongooseSchema, Types } from "mongoose";
+import { ItineraryActivity, ItineraryActivitySchema } from "./activity.schema";
+import { BudgetEntry, BudgetEntrySchema } from "./budget.schema";
 
 @Schema()
 export class ItineraryDay {
@@ -18,12 +15,12 @@ export class ItineraryDay {
 
   @Prop({
     type: MongooseSchema.Types.ObjectId,
-    ref: 'City',
+    ref: "City",
     required: true,
   })
   cityId: Types.ObjectId;
 
-  @Prop({ type: String, trim: true, default: '' })
+  @Prop({ type: String, trim: true, default: "" })
   notes: string;
 
   @Prop({ type: [ItineraryActivitySchema], default: [] })
@@ -33,5 +30,4 @@ export class ItineraryDay {
   budgets: BudgetEntry[];
 }
 
-export const ItineraryDaySchema =
-  SchemaFactory.createForClass(ItineraryDay);
+export const ItineraryDaySchema = SchemaFactory.createForClass(ItineraryDay);

@@ -1,15 +1,8 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import {
-  HydratedDocument,
-  Schema as MongooseSchema,
-  Types,
-} from 'mongoose';
-import { ItineraryVisibility } from '../enums/itinerary-visibility.enum';
-import { ItineraryDay, ItineraryDaySchema } from './day.schema';
-import {
-  TransportCost,
-  TransportCostSchema,
-} from './transport-cost.schema';
+import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
+import { HydratedDocument, Schema as MongooseSchema, Types } from "mongoose";
+import { ItineraryVisibility } from "../enums/itinerary-visibility.enum";
+import { ItineraryDay, ItineraryDaySchema } from "./day.schema";
+import { TransportCost, TransportCostSchema } from "./transport-cost.schema";
 
 export type ItineraryDocument = HydratedDocument<Itinerary>;
 
@@ -28,7 +21,7 @@ export class Itinerary {
 
   @Prop({
     type: MongooseSchema.Types.ObjectId,
-    ref: 'User',
+    ref: "User",
     required: true,
     index: true,
   })
@@ -44,15 +37,18 @@ export class Itinerary {
 
   @Prop({
     type: [MongooseSchema.Types.ObjectId],
-    ref: 'Country',
+    ref: "Country",
     required: true,
     validate: {
       validator: (countryIds: Types.ObjectId[]) =>
         Array.isArray(countryIds) && countryIds.length > 0,
-      message: 'At least one country is required',
+      message: "At least one country is required",
     },
   })
   countryIds: Types.ObjectId[];
+
+  @Prop({ type: Date, default: null })
+  endDate?: Date | null;
 
   @Prop({ type: Date, required: true })
   startDate: Date;
@@ -63,7 +59,7 @@ export class Itinerary {
     validate: {
       validator: daysAreWithinLimitAndSequential,
       message:
-        'An itinerary can have at most 60 days numbered sequentially from 1',
+        "An itinerary can have at most 60 days numbered sequentially from 1",
     },
   })
   days: ItineraryDay[];
@@ -79,6 +75,29 @@ export class Itinerary {
     index: true,
   })
   visibility: ItineraryVisibility;
+
+  @Prop({
+    type: String,
+    default: "USD",
+    uppercase: true,
+    trim: true,
+    match: /^[A-Z]{3}$/,
+  })
+  displayCurrency: string;
+
+  @Prop({
+    type: [MongooseSchema.Types.ObjectId],
+    ref: "HotelBooking",
+    default: [],
+  })
+  hotelBookingIds: Types.ObjectId[];
+
+  @Prop({
+    type: [MongooseSchema.Types.ObjectId],
+    ref: "FlightBooking",
+    default: [],
+  })
+  flightBookingIds: Types.ObjectId[];
 }
 
 export const ItinerarySchema = SchemaFactory.createForClass(Itinerary);

@@ -45,6 +45,9 @@ export class Review {
 
   @Prop({ type: String, trim: true, default: '', maxlength: 1000 })
   comment: string;
+
+  @Prop({ type: Boolean, default: false, index: true })
+  isHidden: boolean;
 }
 
 export const ReviewSchema = SchemaFactory.createForClass(Review);

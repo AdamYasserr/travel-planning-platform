@@ -23,8 +23,16 @@ export const envValidationSchema = Joi.object({
     .default(false),
   COOKIE_DOMAIN: Joi.string().optional().allow(''),
 
-  STRIPE_SECRET_KEY: Joi.string().optional().allow(''),
-  STRIPE_WEBHOOK_SECRET: Joi.string().optional().allow(''),
+  STRIPE_SECRET_KEY: Joi.string()
+    .pattern(/^sk_test_/)
+    .optional()
+    .allow(''),
+  STRIPE_WEBHOOK_SECRET: Joi.string()
+    .pattern(/^whsec_/)
+    .optional()
+    .allow(''),
+  STRIPE_CHECKOUT_SUCCESS_URL: Joi.string().uri().optional().allow(''),
+  STRIPE_CHECKOUT_CANCEL_URL: Joi.string().uri().optional().allow(''),
 
   FXRATES_API_KEY: Joi.string().optional().allow(''),
   FXRATES_BASE_URL: Joi.string()
@@ -36,9 +44,28 @@ export const envValidationSchema = Joi.object({
 }).custom((value: {
   FXRATES_CACHE_TTL_MS: number;
   FXRATES_STALE_TTL_MS: number;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_CHECKOUT_SUCCESS_URL?: string;
+  STRIPE_CHECKOUT_CANCEL_URL?: string;
 }, helpers: Joi.CustomHelpers) => {
   if (
     value.FXRATES_STALE_TTL_MS < value.FXRATES_CACHE_TTL_MS
+  ) {
+    return helpers.error('any.invalid');
+  }
+
+  const stripeEnabled = Boolean(
+    value.STRIPE_SECRET_KEY || value.STRIPE_WEBHOOK_SECRET,
+  );
+  if (
+    stripeEnabled &&
+    !(
+      value.STRIPE_SECRET_KEY &&
+      value.STRIPE_WEBHOOK_SECRET &&
+      value.STRIPE_CHECKOUT_SUCCESS_URL &&
+      value.STRIPE_CHECKOUT_CANCEL_URL
+    )
   ) {
     return helpers.error('any.invalid');
   }

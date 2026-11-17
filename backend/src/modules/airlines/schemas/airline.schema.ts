@@ -14,6 +14,9 @@ export class Airline {
 
   @Prop({ default: true })
   isActive: boolean;
+
+  @Prop({ type: String, default: null })
+  logo: string | null;
 }
 
 export const AirlineSchema = SchemaFactory.createForClass(Airline);

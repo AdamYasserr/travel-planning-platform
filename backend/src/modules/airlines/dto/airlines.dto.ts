@@ -32,4 +32,9 @@ export class UpdateAirlineDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  logo?: string;
 }

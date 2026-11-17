@@ -29,9 +29,11 @@ import {
 import { User, UserSchema } from '../../users/user.schema';
 
 import { FlightsService } from './flights.service';
+import { FlightBookingsModule } from '../flight-bookings/flight-bookings.module';
 
 @Module({
   imports: [
+    FlightBookingsModule,
     MongooseModule.forFeature([
       {
         name: Flight.name,
