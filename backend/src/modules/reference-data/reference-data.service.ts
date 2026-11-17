@@ -4,7 +4,7 @@ import { Model } from 'mongoose';
 import { Attraction } from './schemas/attraction.schema';
 import { City } from './schemas/city.schema';
 import { Country } from './schemas/country.schema';
-import { ReferenceQueryDto } from './dto/reference-query.dto';
+import { AttractionQueryDto, CityQueryDto, REFERENCE_PAGE_SIZE, ReferenceQueryDto } from './dto/reference-query.dto';
 import { SupportedCurrenciesService } from './supported-currencies.service';
 
 const PROJECTION = { _id: 0, __v: 0, createdAt: 0, updatedAt: 0 };
@@ -22,11 +22,11 @@ export class ReferenceDataService {
     return this.list(this.countries, q, {}, { name: 1, code: 1 });
   }
 
-  citiesList(q: ReferenceQueryDto) {
+  citiesList(q: CityQueryDto) {
     return this.list(this.cities, q, q.parentId ? { countryCode: q.parentId.trim().toUpperCase() } : {}, { name: 1, cityId: 1 });
   }
 
-  attractionsList(q: ReferenceQueryDto) {
+  attractionsList(q: AttractionQueryDto) {
     return this.list(this.attractions, q, q.parentId ? { cityId: q.parentId.trim() } : {}, { name: 1, attractionId: 1 });
   }
 
@@ -38,7 +38,7 @@ export class ReferenceDataService {
     const f: Record<string, unknown> = { ...extra };
     if (q.search?.trim()) f.name = { $regex: escapeRegex(q.search.trim()), $options: 'i' };
     const page = q.page ?? 1;
-    const limit = q.limit ?? 50;
+    const limit = q.limit ?? REFERENCE_PAGE_SIZE;
     const [items, totalItems] = await Promise.all([
       m.find(f, PROJECTION).sort(sort).skip((page - 1) * limit).limit(limit).lean().exec(),
       m.countDocuments(f).exec(),
