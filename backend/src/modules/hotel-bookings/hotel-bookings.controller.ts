@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   Post,
   Query,
@@ -62,8 +63,21 @@ export class HotelBookingsController {
     return this.hotelBookingsService.getForUser(request.user.userId, id);
   }
 
+  @Post(':id/cancel')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Cancel a hotel booking (unpaid hold or confirmed booking)' })
+  cancelBooking(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.hotelBookingsService.cancel(request.user.userId, id);
+  }
+
   @Delete(':id')
-  @ApiOperation({ summary: 'Cancel a hotel booking' })
+  @ApiOperation({
+    summary: 'Cancel a hotel booking',
+    description: 'Legacy alias of POST /hotel-bookings/:id/cancel.',
+  })
   cancel(
     @Param('id') id: string,
     @Req() request: AuthenticatedRequest,

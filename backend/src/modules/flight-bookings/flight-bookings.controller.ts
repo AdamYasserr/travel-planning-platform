@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   Post,
   Query,
@@ -27,8 +28,23 @@ type AuthenticatedRequest = Request & {
 export class FlightBookingsController {
   constructor(private readonly flightBookingsService: FlightBookingsService) {}
 
+  @Post('hold')
+  @ApiOperation({
+    summary: 'Hold seats for a flight (creates a Pending Payment booking)',
+    description: 'Creating the booking IS the hold: POST /flight-bookings and POST /flight-bookings/hold are the same operation (a Pending Payment booking that holds the seats for 10 minutes). Do not call both: calling both for the same trip creates TWO pending bookings and holds the seats twice.',
+  })
+  hold(
+    @Body() dto: CreateFlightBookingDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.flightBookingsService.create(request.user.userId, dto);
+  }
+
   @Post()
-  @ApiOperation({ summary: 'Create a flight booking hold' })
+  @ApiOperation({
+    summary: 'Create a flight booking hold',
+    description: 'Creating the booking IS the hold: POST /flight-bookings and POST /flight-bookings/hold are the same operation (a Pending Payment booking that holds the seats for 10 minutes). Do not call both: calling both for the same trip creates TWO pending bookings and holds the seats twice. Legacy alias of POST /flight-bookings/hold.',
+  })
   create(
     @Body() dto: CreateFlightBookingDto,
     @Req() request: AuthenticatedRequest,
@@ -55,8 +71,18 @@ export class FlightBookingsController {
     return this.flightBookingsService.getForUser(request.user.userId, id);
   }
 
+  @Post(':id/cancel')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Cancel a flight booking (unpaid hold or confirmed booking)' })
+  cancelBooking(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
+    return this.flightBookingsService.cancel(request.user.userId, id);
+  }
+
   @Delete(':id')
-  @ApiOperation({ summary: 'Cancel a pending flight booking hold' })
+  @ApiOperation({
+    summary: 'Cancel a pending flight booking hold',
+    description: 'Legacy alias of POST /flight-bookings/:id/cancel.',
+  })
   cancel(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
     return this.flightBookingsService.cancel(request.user.userId, id);
   }
