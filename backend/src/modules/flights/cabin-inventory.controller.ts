@@ -17,6 +17,7 @@ import {
 
 import type { Request } from 'express';
 
+import { Public } from '../../common/decorators/public.decorator';
 import { CabinInventoryService } from './cabin-inventory.service';
 
 import {
@@ -60,6 +61,7 @@ export class CabinInventoryController {
 
   // FLT-04: Get cabin inventory for a flight
   @Get()
+  @Public()
   @ApiOperation({ summary: 'Get flight cabin inventory' })
   async findByFlight(
     @Param('flightId') flightId: string,
