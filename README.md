@@ -197,6 +197,50 @@ Run lint:
 npm run lint
 ```
 
+### End-to-end tests (`npm run test:e2e`)
+
+```bash
+cd backend
+npm run test:e2e                       # everything
+npm run test:e2e -- holds              # one file (name filter)
+npm run test:e2e -- aliases -t "refund" # one file, tests whose name matches
+```
+
+These tests boot the **real** Nest app (`AppModule`, the real guards, the real `ValidationPipe`, real cookies, the same setup as `main.ts` through `configureApp`) on an **in-memory MongoDB replica set** and drive it over HTTP with supertest. They never read `MONGODB_URI` and never touch Atlas: the boot helper refuses to start unless the app is connected to the in-memory database. Each test file starts its own app and database, so files are independent; inside a file every test creates its own users and providers with unique emails. The first run downloads a `mongod` binary (cached afterwards). A full run takes about 2.5 minutes; at most 2 files run at once.
+
+**What is mocked (and nothing else):**
+
+| Mocked | Where | Why |
+| --- | --- | --- |
+| Stripe (`StripeService`) | `test/e2e/helpers/fakes.ts` (`StripeFake`) | no network; records session/refund calls; accepts only the signature `valid` |
+| Exchange rates (`FxRatesService`) | `test/e2e/helpers/fakes.ts` (`FxFake`) | fixed rates |
+| Throttle counter (`ThrottlerStorage`) | `test/e2e/helpers/app.ts` | 100 requests/minute would break lockout and concurrency tests. The real guard still runs |
+
+**Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: open a payment, then post a fake-signed webhook event to `POST /api/payments/webhook`. All Stripe event details live in that helper and in `StripeFake`; if payments move to PaymentIntents, change those two places, not the tests.
+
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`); shared helpers in `test/e2e/helpers/`:
+
+| Helper | Purpose |
+| --- | --- |
+| `startApp()` / `ctx.close()` | boot and stop the app; `ctx.agent()` is a fresh cookie jar, `ctx.http()` is anonymous, `ctx.get(Service)` reaches a real provider (e.g. to run a cron job method) |
+| `createUser(ctx, role)` | account + logged-in supertest agent (`user.agent`) |
+| `login(ctx, email, password)` | a new logged-in agent |
+| `createHotelWithRooms(ctx, opts)` | hotel via the admin API, hotel moderator, rooms, availability range |
+| `createAirlineWithFlight(ctx, opts)` | airline, airline moderator, a future CAI to DXB flight and an Economy cabin (call `seedReference` first) |
+| `seedReference(ctx)` | runs the real CSV importer on `backend/data/reference` |
+| `holdHotel`, `holdFlight`, `startPayment`, `confirmBooking` | booking helpers; `day(n)` gives a date `n` days from today |
+
+**Adding the next feature's tests**
+
+1. Create `test/e2e/<area>.e2e.ts` (the name must end in `.e2e.ts`).
+2. In `beforeAll` call `startApp()` (add `{ swagger: true }` only if you check the Swagger JSON) and `seedReference(ctx)` if you need cities, airports or currencies; call `ctx.close()` in `afterAll`.
+3. Build data with the helpers, one scenario per `it`, each creating its own users and providers.
+4. Use `agent` for logged-in calls (`user.agent.get('/api/...')`) and `ctx.http()` for anonymous ones. To control time, back-date a field through `ctx.conn.model('HotelBooking')` and call the job method with `ctx.get(PaymentsService)`.
+5. If the feature needs a new external service, replace it in `startApp()` with a fake in `helpers/fakes.ts`; do not mock your own services.
+6. Commit as `test(e2e): <area> (<requirement ids>)`.
+
+A needed `import { Connection } from 'mongoose'` in a class used by Nest's dependency injection must be `import type { Connection }`; the ESM test loader rejects the value import.
+
 ## 9. API Documentation
 
 Swagger UI:
