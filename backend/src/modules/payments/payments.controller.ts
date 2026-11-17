@@ -10,14 +10,20 @@ import {
   Req,
 } from '@nestjs/common';
 import {
+  ApiConflictResponse,
   ApiCookieAuth,
+  ApiCreatedResponse,
+  ApiNotFoundResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request } from 'express';
 
 import { PaymentsService } from './payments.service';
-import { CreateHotelPaymentDto } from './dto/payments.dto';
+import {
+  CreateFlightPaymentDto,
+  CreateHotelPaymentDto,
+} from './dto/payments.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { UserRole } from '../../common/enums/user-role.enum';
@@ -64,6 +70,31 @@ export class PaymentsController {
     return this.paymentsService.cancelHotelBooking(
       request.user.userId,
       bookingId,
+    );
+  }
+
+  // PAY-01 / FLT-23: Create (or reuse, as a retry) a Stripe PaymentIntent for
+  // a flight booking. Requires Pending Payment, a live hold and accepted policies.
+  @Post('flight/intent')
+  @Roles(UserRole.USER)
+  @ApiCookieAuth('access_token')
+  @ApiOperation({
+    summary: 'Create a flight payment intent',
+    description:
+      'Creates or reuses a Stripe PaymentIntent (test mode) for your Pending Payment flight booking. Call again to retry until the 10-minute hold expires. The booking is confirmed only by the verified webhook.',
+  })
+  @ApiCreatedResponse({ description: '{ paymentIntentId, clientSecret, amount, currency, holdExpiresAt }' })
+  @ApiNotFoundResponse({ description: 'Booking not found or not yours' })
+  @ApiConflictResponse({
+    description: 'Not awaiting payment, hold expired, policies not accepted, wrong currency or already paid',
+  })
+  createFlightPayment(
+    @Body() dto: CreateFlightPaymentDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.paymentsService.createFlightPayment(
+      request.user.userId,
+      dto.bookingId,
     );
   }
 

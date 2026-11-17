@@ -8,7 +8,6 @@ import {
 import {
   FlightBookingStatus,
   FlightCancelledBy,
-  FlightRefundStatus,
   PassengerType,
   SegmentDirection,
 } from '../enums/flight-booking-status.enum';
@@ -248,11 +247,9 @@ export class FlightBooking {
   @Prop({ type: Number, default: null })
   refundAmount: number | null;
 
-  @Prop({ type: String, enum: [...Object.values(FlightRefundStatus), null], default: null })
-  refundStatus: FlightRefundStatus | null;
-
-  @Prop({ type: String, default: null })
-  refundId: string | null;
+  // PAY-03: When the refund was requested. Its status lives on the Payment.
+  @Prop({ type: Date, default: null })
+  refundRequestedAt: Date | null;
 }
 
 export const FlightBookingSchema = SchemaFactory.createForClass(FlightBooking);

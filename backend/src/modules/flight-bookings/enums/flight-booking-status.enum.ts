@@ -61,11 +61,8 @@ export enum SegmentDirection {
   RETURN = 'Return',
 }
 
-export enum FlightRefundStatus {
-  NOT_APPLICABLE = 'Not Applicable',
-  PENDING = 'Pending',
-  PROCESSED = 'Processed',
-}
+// PAY-03: Refund status (Pending / Refunded / Failed) is stored only on the
+// Payment record (payments/enums/refund-status.enum.ts), not on the booking.
 
 export enum FlightCancelledBy {
   USER = 'User',

@@ -1,52 +1,70 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
+
+import { PaymentsService } from '../../payments/payments.service';
 
 // FLT-23 / FLT-26 / PAY-01 / PAY-03: The flight booking flow talks to payments
-// only through this interface, so the Stripe integration can be plugged in
-// later without changing booking logic. Flight bookings never call hotel
-// payment methods.
+// only through this interface. Flight bookings never call hotel payment
+// methods.
 
 export const FLIGHT_PAYMENTS_PORT = Symbol('FLIGHT_PAYMENTS_PORT');
 
 export interface FlightPaymentVerification {
   succeeded: boolean;
+  // Stripe PaymentIntent ID
   paymentId?: string;
 }
 
 export interface FlightRefundResult {
-  status: 'Processed' | 'Pending';
+  status: 'Refunded' | 'Pending' | 'Failed';
   refundId?: string;
 }
 
-export interface FlightPaymentsPort {
-  // Must return succeeded: true only after the payment provider has verified
-  // a successful payment for this booking.
-  confirmPayment(bookingId: string): Promise<FlightPaymentVerification>;
-
-  refund(bookingId: string, amount: number): Promise<FlightRefundResult>;
+// PAY-01 / PAY-03: What the booking shows about its payment (no secrets)
+export interface FlightPaymentSummary {
+  paymentIntentId: string;
+  status: string;
+  amount: number;
+  currency: string;
+  refundStatus: string | null;
+  refundId: string | null;
 }
 
-// Placeholder until the PaymentsModule supports flights. It FAILS CLOSED:
-// no payment is ever reported as verified, so no booking can be confirmed
-// without a real payment.
-@Injectable()
-export class PendingFlightPaymentsAdapter implements FlightPaymentsPort {
-  private readonly logger = new Logger(PendingFlightPaymentsAdapter.name);
+export interface FlightPaymentsPort {
+  // True only when a Payment for this booking is Succeeded (verified by the
+  // signed Stripe webhook).
+  confirmPayment(bookingId: string): Promise<FlightPaymentVerification>;
 
-  async confirmPayment(bookingId: string): Promise<FlightPaymentVerification> {
-    // TODO(PAY-01): Replace with a call to the Stripe-backed PaymentsModule
-    // (verify the PaymentIntent for this flight booking in Stripe test mode).
-    this.logger.warn(
-      `Flight payments are not integrated yet; booking ${bookingId} not verified`,
-    );
-    return { succeeded: false };
+  // Creates (or reuses) a Stripe refund. Throws if Stripe cannot be reached.
+  refund(bookingId: string, amount: number): Promise<FlightRefundResult>;
+
+  // Cancels open PaymentIntents of a booking whose hold expired.
+  cancelPendingPayments(bookingId: string): Promise<void>;
+
+  getPaymentSummary(bookingId: string): Promise<FlightPaymentSummary | null>;
+}
+
+// Stripe-backed implementation through the shared PaymentsService.
+@Injectable()
+export class StripeFlightPaymentsAdapter implements FlightPaymentsPort {
+  constructor(
+    // PaymentsModule and FlightBookingsModule reference each other
+    @Inject(forwardRef(() => PaymentsService))
+    private readonly paymentsService: PaymentsService,
+  ) {}
+
+  confirmPayment(bookingId: string): Promise<FlightPaymentVerification> {
+    return this.paymentsService.verifyFlightPayment(bookingId);
   }
 
-  async refund(bookingId: string, amount: number): Promise<FlightRefundResult> {
-    // TODO(PAY-03): Replace with a Stripe refund through the PaymentsModule.
-    // Until then the refund stays Pending on the booking.
-    this.logger.warn(
-      `Flight refunds are not integrated yet; refund of ${amount} for booking ${bookingId} left Pending`,
-    );
-    return { status: 'Pending' };
+  refund(bookingId: string, amount: number): Promise<FlightRefundResult> {
+    return this.paymentsService.refundFlightPayment(bookingId, amount);
+  }
+
+  cancelPendingPayments(bookingId: string): Promise<void> {
+    return this.paymentsService.cancelFlightPaymentIntents(bookingId);
+  }
+
+  getPaymentSummary(bookingId: string): Promise<FlightPaymentSummary | null> {
+    return this.paymentsService.getFlightPaymentSummary(bookingId);
   }
 }

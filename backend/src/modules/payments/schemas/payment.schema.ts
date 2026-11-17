@@ -19,13 +19,37 @@ export class Payment {
   })
   userId: Types.ObjectId;
 
+  // PAY-01: Which kind of booking this payment is for. Existing hotel
+  // payments have no value stored and default to 'hotel'.
+  @Prop({
+    type: String,
+    enum: ['hotel', 'flight'],
+    default: 'hotel',
+    required: true,
+  })
+  bookingType: 'hotel' | 'flight';
+
+  // Required for hotel payments (unchanged behaviour)
   @Prop({
     type: MongooseSchema.Types.ObjectId,
     ref: 'HotelBooking',
-    required: true,
+    required: function (this: { bookingType?: string }) {
+      return this.bookingType !== 'flight';
+    },
     index: true,
   })
   hotelBookingId: Types.ObjectId;
+
+  // FLT-23: Required for flight payments
+  @Prop({
+    type: MongooseSchema.Types.ObjectId,
+    ref: 'FlightBooking',
+    required: function (this: { bookingType?: string }) {
+      return this.bookingType === 'flight';
+    },
+    default: undefined,
+  })
+  flightBookingId?: Types.ObjectId;
 
   @Prop({
     type: String,
@@ -60,3 +84,4 @@ export const PaymentSchema = SchemaFactory.createForClass(Payment);
 
 PaymentSchema.index({ userId: 1, createdAt: -1 });
 PaymentSchema.index({ hotelBookingId: 1 });
+PaymentSchema.index({ flightBookingId: 1, createdAt: -1 }, { sparse: true });

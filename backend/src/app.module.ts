@@ -21,6 +21,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 // Hania - Flight Management Modules
 import { AirlinesModule } from './modules/airlines/airlines.module';
 import { FlightsModule } from './modules/flights/flights.module';
+import { AirportsModule } from './modules/airports/airports.module';
 import { FlightBookingsModule } from './modules/flight-bookings/flight-bookings.module';
 import { AirportsModule } from './modules/airports/airports.module';
 
