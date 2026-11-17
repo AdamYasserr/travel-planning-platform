@@ -6,6 +6,12 @@ export const PASSWORD = 'Passw0rd!ok';
 export type Role = 'user' | 'moderator' | 'admin';
 
 let counter = 0;
+/** A 3-letter airline code that is unique within this test file (each file has its own database). */
+let airlineSeq = Math.floor(Math.random() * 17576);
+export const airlineCode = () => {
+  airlineSeq = (airlineSeq + 1) % 17576;
+  return [Math.floor(airlineSeq / 676), Math.floor(airlineSeq / 26) % 26, airlineSeq % 26].map((n) => String.fromCharCode(65 + n)).join('');
+};
 export const unique = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++counter}-${Math.random().toString(36).slice(2, 6)}`;
 
 /** YYYY-MM-DD, UTC, `days` from today. */
@@ -71,6 +77,14 @@ export async function createUser(
   return { id, name, email, password: PASSWORD, role, agent: await login(ctx, email) };
 }
 
+export interface RoomSpec {
+  name?: string;
+  type?: string;
+  beds?: number;
+  maxOccupancy?: number;
+  price?: number;
+}
+
 export interface HotelFixture {
   hotelId: string;
   roomIds: string[];
@@ -81,12 +95,12 @@ export interface HotelFixture {
 /** Hotel created by an admin, with `rooms` rooms and an availability range, managed by a hotel moderator. */
 export async function createHotelWithRooms(
   ctx: E2EContext,
-  opts: { admin?: TestUser; rooms?: number; availability?: { startDate: string; endDate: string }; pricePerNight?: number; currency?: string; cityId?: string; countryId?: string } = {},
+  opts: { admin?: TestUser; rooms?: number; roomSpecs?: RoomSpec[]; availability?: { startDate: string; endDate: string }; pricePerNight?: number; currency?: string; cityId?: string; countryId?: string; name?: string; starClass?: number } = {},
 ): Promise<HotelFixture> {
   const admin = opts.admin ?? (await createUser(ctx, 'admin'));
   const hotelRes = await admin.agent.post('/api/hotels').send({
-    name: unique('Hotel'), address: '12 Corniche Road', cityId: opts.cityId ?? 'cairo', countryId: opts.countryId ?? 'EG',
-    starClass: 4, checkInTime: '15:00', checkOutTime: '11:00',
+    name: opts.name ?? unique('Hotel'), address: '12 Corniche Road', cityId: opts.cityId ?? 'cairo', countryId: opts.countryId ?? 'EG',
+    starClass: opts.starClass ?? 4, checkInTime: '15:00', checkOutTime: '11:00',
     cancellationTiers: [{ daysBeforeCheckIn: 7, refundPercentage: 100 }, { daysBeforeCheckIn: 0, refundPercentage: 0 }],
   });
   if (hotelRes.status !== 201) throw new Error(`hotel create failed: ${hotelRes.status} ${JSON.stringify(hotelRes.body)}`);
@@ -95,10 +109,11 @@ export async function createHotelWithRooms(
 
   const range = opts.availability ?? { startDate: day(1), endDate: day(120) };
   const roomIds: string[] = [];
-  for (let i = 1; i <= (opts.rooms ?? 3); i++) {
+  const specs: RoomSpec[] = opts.roomSpecs ?? Array.from({ length: opts.rooms ?? 3 }, () => ({}));
+  for (const [index, spec] of specs.entries()) {
     const roomRes = await moderator.agent.post(`/api/hotels/${hotelId}/rooms`).send({
-      name: `Room ${100 + i}`, type: 'Standard double', beds: 2, maxOccupancy: 3,
-      pricePerNight: opts.pricePerNight ?? 1500, currency: opts.currency ?? 'EGP',
+      name: spec.name ?? `Room ${101 + index}`, type: spec.type ?? 'Standard double', beds: spec.beds ?? 2, maxOccupancy: spec.maxOccupancy ?? 3,
+      pricePerNight: spec.price ?? opts.pricePerNight ?? 1500, currency: opts.currency ?? 'EGP',
     });
     if (roomRes.status !== 201) throw new Error(`room create failed: ${roomRes.status} ${JSON.stringify(roomRes.body)}`);
     const roomId = idOf(roomRes.body);
@@ -123,7 +138,7 @@ export async function createAirlineWithFlight(
   opts: { admin?: TestUser; seats?: number; departInDays?: number; price?: number } = {},
 ): Promise<FlightFixture> {
   const admin = opts.admin ?? (await createUser(ctx, 'admin'));
-  const code = Array.from({ length: 3 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join('');
+  const code = airlineCode();
   const airlineRes = await admin.agent.post('/api/airlines').send({ name: unique('Air'), code });
   if (airlineRes.status !== 201) throw new Error(`airline create failed: ${airlineRes.status} ${JSON.stringify(airlineRes.body)}`);
   const airlineId = idOf(airlineRes.body);
@@ -154,7 +169,7 @@ export interface AirlineFixture {
 /** An airline and its moderator, with no flights. Pair with createFlight(). */
 export async function createAirline(ctx: E2EContext, opts: { admin?: TestUser } = {}): Promise<AirlineFixture> {
   const admin = opts.admin ?? (await createUser(ctx, 'admin'));
-  const code = Array.from({ length: 3 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join('');
+  const code = airlineCode();
   const res = await admin.agent.post('/api/airlines').send({ name: unique('Air'), code });
   if (res.status !== 201) throw new Error(`airline create failed: ${res.status} ${JSON.stringify(res.body)}`);
   const airlineId = idOf(res.body);
