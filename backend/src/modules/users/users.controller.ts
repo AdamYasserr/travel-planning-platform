@@ -1,9 +1,12 @@
 import {
+  BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Patch,
   Req,
+  Res,
 } from '@nestjs/common';
 import {
   ApiBody,
@@ -12,9 +15,12 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import type { Request } from 'express';
+import { ConfigService } from '@nestjs/config';
+import type { Request, Response } from 'express';
 
 import { UpdateProfileDto } from '../../users/dto/update-profile.dto';
+import { DeactivateAccountDto } from '../../auth/dto/deactivate-account.dto';
+import { clearAuthCookies } from '../../common/auth/auth-cookies';
 import { UsersService } from './users.service';
 
 interface AuthenticatedRequest extends Request {
@@ -27,7 +33,10 @@ interface AuthenticatedRequest extends Request {
 @ApiTags('User Profiles')
 @ApiCookieAuth('access_token')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Get('me')
   @ApiOperation({ summary: 'Retrieve the authenticated user profile' })
@@ -54,5 +63,24 @@ export class UsersController {
         dto,
       ),
     };
+  }
+
+  @Delete('me')
+  @ApiOperation({ summary: 'Delete (deactivate) the authenticated account; requires { "confirm": true }' })
+  @ApiBody({ type: DeactivateAccountDto })
+  @ApiResponse({ status: 200, description: 'Account deactivated and auth cookies cleared.' })
+  @ApiResponse({ status: 400, description: 'Confirmation is missing.' })
+  @ApiResponse({ status: 409, description: 'Upcoming confirmed flight or hotel bookings exist.' })
+  async deleteAccount(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: DeactivateAccountDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    if (dto.confirm !== true) {
+      throw new BadRequestException('You must confirm account deactivation');
+    }
+    const result = await this.usersService.deactivateAccount(request.user.userId);
+    clearAuthCookies(this.configService, response);
+    return result;
   }
 }

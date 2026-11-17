@@ -26,6 +26,7 @@ import { UserRole } from '../../common/enums/user-role.enum';
 import { Review } from './schemas/review.schema';
 import { ReferenceValidationService } from '../reference-data/reference-validation.service';
 import { SupportedCurrenciesService } from '../reference-data/supported-currencies.service';
+import { presentAuthor } from '../../common/users/deleted-user';
 import { runBookingTransaction } from '../../common/booking/booking-transaction';
 import { activeReservationClause } from '../hotel-bookings/room-reservation.util';
 import {
@@ -340,6 +341,20 @@ async getDetails(
     .lean()
     .exec();
 
+  // ACC-12: reviews written by deactivated accounts are shown as "Deleted user".
+  const reviewers = reviews.length
+    ? await this.userModel
+        .find({ _id: { $in: reviews.map((review) => review.userId) } })
+        .select('_id name isActive deactivatedAt')
+        .lean()
+        .exec()
+    : [];
+  const reviewerById = new Map(reviewers.map((reviewer) => [reviewer._id.toString(), reviewer]));
+  const presentedReviews = reviews.map((review) => {
+    const reviewer = reviewerById.get(String(review.userId));
+    return { ...review, author: { name: presentAuthor(reviewer).name } };
+  });
+
   const averageRating =
     reviews.length === 0
       ? null
@@ -353,7 +368,7 @@ async getDetails(
   const details = {
     ...hotel.toObject(),
     averageRating,
-    reviews,
+    reviews: presentedReviews,
   };
 
   if (!query.checkInDate || !query.checkOutDate) {

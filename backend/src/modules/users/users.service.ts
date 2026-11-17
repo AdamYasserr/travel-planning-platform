@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -9,6 +10,13 @@ import { Model } from 'mongoose';
 import { User, UserDocument } from '../../users/user.schema';
 import { UpdateProfileDto } from '../../users/dto/update-profile.dto';
 import { SupportedCurrenciesService } from '../reference-data/supported-currencies.service';
+import { HotelBooking, HotelBookingStatus } from '../hotel-bookings/schemas/hotel-booking.schema';
+import { FlightBooking } from '../flight-bookings/schemas/flight-booking.schema';
+import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
+import { Post } from '../blog/schemas/post.schema';
+import { PostStatus } from '../blog/enums/post-status.enum';
+import { Itinerary } from '../itineraries/schemas/itinerary.schema';
+import { ItineraryVisibility } from '../itineraries/enums/itinerary-visibility.enum';
 
 export interface PublicUser {
   id: string;
@@ -26,6 +34,14 @@ export class UsersService {
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
     private readonly currencies: SupportedCurrenciesService,
+    @InjectModel(HotelBooking.name)
+    private readonly hotelBookings: Model<HotelBooking>,
+    @InjectModel(FlightBooking.name)
+    private readonly flightBookings: Model<FlightBooking>,
+    @InjectModel(Post.name)
+    private readonly posts: Model<Post>,
+    @InjectModel(Itinerary.name)
+    private readonly itineraries: Model<Itinerary>,
   ) {}
 
   async getProfile(userId: string): Promise<PublicUser> {
@@ -69,6 +85,41 @@ export class UsersService {
 
     await user.save();
     return this.toPublicUser(user);
+  }
+
+  /**
+   * ACC-12: deactivates the account unless it has an upcoming Confirmed booking
+   * (flight not yet departed, hotel stay not yet checked out). Afterwards the user's published posts
+   * are hidden and public itineraries made private; comments and reviews remain but are shown as
+   * "Deleted user" wherever they are presented.
+   */
+  async deactivateAccount(userId: string) {
+    const user = await this.findAvailableUser(userId);
+    const now = new Date();
+
+    const [hotel, flight] = await Promise.all([
+      this.hotelBookings.exists({ userId: user._id, status: HotelBookingStatus.CONFIRMED, checkOutDate: { $gt: now } }),
+      this.flightBookings.exists({ userId: user._id, status: FlightBookingStatus.CONFIRMED, departureTime: { $gt: now } }),
+    ]);
+    if (hotel || flight) {
+      throw new ConflictException(
+        'You cannot delete your account while you have upcoming confirmed flight or hotel bookings. Cancel them or wait until they are completed.',
+      );
+    }
+
+    user.isActive = false;
+    user.deactivatedAt = now;
+    user.refreshTokenHash = null;
+    user.failedLoginAttempts = 0;
+    user.lockUntil = null;
+    await user.save();
+
+    await Promise.all([
+      this.posts.updateMany({ authorId: user._id, status: PostStatus.PUBLISHED }, { $set: { status: PostStatus.HIDDEN } }),
+      this.itineraries.updateMany({ ownerId: user._id, visibility: ItineraryVisibility.PUBLIC }, { $set: { visibility: ItineraryVisibility.PRIVATE } }),
+    ]);
+
+    return { message: 'Account deactivated successfully' };
   }
 
   private async findAvailableUser(userId: string): Promise<UserDocument> {

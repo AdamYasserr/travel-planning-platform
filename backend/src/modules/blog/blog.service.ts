@@ -21,6 +21,7 @@ import { Comment, CommentDocument } from './schemas/comment.schema';
 import { Like, LikeDocument } from './schemas/like.schema';
 import { Post, PostDocument } from './schemas/post.schema';
 import { CommentStatus, PostStatus } from './enums/post-status.enum';
+import { presentAuthor } from '../../common/users/deleted-user';
 
 @Injectable()
 export class BlogService {
@@ -381,7 +382,7 @@ export class BlogService {
 
   private async presentPost(post: PostDocument, viewerId?: string) {
     const [author, likes, media] = await Promise.all([
-      this.users.findById(post.authorId).select('_id name').exec(),
+      this.users.findById(post.authorId).select('_id name isActive deactivatedAt').exec(),
       this.likes.countDocuments({ postId: post._id }).exec(),
       this.media.listTargetMedia(
         MediaTargetType.POST,
@@ -391,7 +392,7 @@ export class BlogService {
     ]);
     return {
       ...post.toObject(),
-      author: author ? { id: author._id.toString(), name: author.name } : null,
+      author: presentAuthor(author),
       likes,
       media,
       viewerLiked: viewerId
@@ -407,7 +408,7 @@ export class BlogService {
 
   private async presentComment(comment: CommentDocument) {
     const [author, media] = await Promise.all([
-      this.users.findById(comment.authorId).select('_id name').exec(),
+      this.users.findById(comment.authorId).select('_id name isActive deactivatedAt').exec(),
       this.media.listTargetMedia(
         MediaTargetType.COMMENT,
         comment._id.toString(),
@@ -416,7 +417,7 @@ export class BlogService {
     ]);
     return {
       ...comment.toObject(),
-      author: author ? { id: author._id.toString(), name: author.name } : null,
+      author: presentAuthor(author),
       media,
     };
   }
