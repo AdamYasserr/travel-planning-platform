@@ -99,4 +99,26 @@ describe('flight cancellation is atomic (FLT-06) on a real replica set', () => {
     expect(await refundModel.countDocuments({ bookingId: { $in: bookingIds }, percentage: 100 })).toBe(3);
     await expect(payments.cancelFlight(flight._id, markCancelled(flight._id))).rejects.toThrow(/already cancelled/);
   });
+  it('a payment can never have a second refund (PAY-03): opening it again returns the first one', async () => {
+    const { bookingIds } = await seed();
+    const payment = await paymentModel.findOne({ bookingId: bookingIds[0] }).exec();
+    const open = async (percentage: number) => {
+      const session = await conn.startSession();
+      try {
+        let id = '';
+        await session.withTransaction(async () => {
+          const refund = await refunds.createInTransaction(payment, { paidMinor: payment.amountMinor, percentage, reason: 'booking_cancelled' as never }, session);
+          id = String(refund!._id);
+        });
+        return id;
+      } finally {
+        await session.endSession();
+      }
+    };
+    const first = await open(100);
+    const second = await open(50);
+    expect(second).toBe(first);
+    expect(await refundModel.countDocuments({ paymentId: payment._id })).toBe(1);
+    expect((await refundModel.findById(first).lean()).amountMinor).toBe(10000);
+  });
 });
