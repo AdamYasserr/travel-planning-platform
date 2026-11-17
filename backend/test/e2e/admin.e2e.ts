@@ -240,15 +240,18 @@ describe('administration (ACC-14, ACC-15, ACC-16, ACC-17)', () => {
       expect((await ids(`userId=${alice.id}&dateField=booked&from=${day(0)}&to=${day(0)}`)).sort()).toEqual([hotelBooking, flightBooking].sort());
     });
 
-    it('rejects a bad date range and an unknown dateField (400)', async () => {
+    it('rejects a bad date range, unknown dateField, unknown status and unknown type (400)', async () => {
       expect((await admin.agent.get(`/api/admin/bookings?from=${day(5)}&to=${day(1)}`)).status).toBe(400);
       expect((await admin.agent.get('/api/admin/bookings?dateField=never')).status).toBe(400);
+      for (const query of ['status=Maybe', 'status=confirmed', 'type=train', 'type=Hotel']) {
+        const res = await admin.agent.get(`/api/admin/bookings?${query}`);
+        expect([query, res.status]).toEqual([query, 400]);
+        expect(res.body.errors[0].field).toBe(query.split('=')[0]);
+      }
     });
 
-    it('an unknown status is not validated: it returns an empty page (documented current behaviour)', async () => {
-      const res = await admin.agent.get('/api/admin/bookings?status=Maybe');
-      expect(res.status).toBe(200);
-      expect(res.body.items).toEqual([]);
+    it.each(['Pending Payment', 'Confirmed', 'Completed', 'Expired', 'Cancelled'])('the real status "%s" is accepted', async (status) => {
+      expect((await admin.agent.get(`/api/admin/bookings?status=${encodeURIComponent(status)}`)).status).toBe(200);
     });
 
     it('paginates 10 at a time by default', async () => {

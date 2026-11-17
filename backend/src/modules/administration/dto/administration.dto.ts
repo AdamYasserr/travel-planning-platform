@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
   IsEnum,
+  IsIn,
   IsInt,
   IsMongoId,
   IsOptional,
@@ -13,6 +14,7 @@ import {
   Matches,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { HotelBookingStatus } from '../../hotel-bookings/schemas/hotel-booking.schema';
 
 export enum ModeratorProviderType {
   AIRLINE = 'airline',
@@ -92,16 +94,18 @@ export enum AdminBookingDateField {
   BOOKED = 'booked',
 }
 
+/** Hotel and flight bookings share one lifecycle (GEN-11); the enums have identical values. */
+const BOOKING_STATUSES: string[] = Object.values(HotelBookingStatus);
+
 export class AdminBookingQueryDto {
   @ApiPropertyOptional({ enum: ['flight', 'hotel'] })
   @IsOptional()
-  @IsEnum(['flight', 'hotel'])
+  @IsIn(['flight', 'hotel'])
   type?: 'flight' | 'hotel';
 
-  @ApiPropertyOptional({ example: 'Pending Payment', enum: ['Pending Payment', 'Confirmed', 'Completed', 'Expired', 'Cancelled'] })
+  @ApiPropertyOptional({ example: 'Pending Payment', enum: BOOKING_STATUSES })
   @IsOptional()
-  @IsString()
-  @MaxLength(40)
+  @IsIn(BOOKING_STATUSES)
   status?: string;
 
   @ApiPropertyOptional({ description: 'Filter by booking owner ObjectId' })
