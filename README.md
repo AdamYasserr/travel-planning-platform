@@ -174,7 +174,8 @@ Production does not refuse to start with `COOKIE_SECURE=false` (Safari and some 
 Behind HTTPS always leave it on. For a local demo in either mode set `COOKIE_SECURE=false` over http, or `true` over https.
 
 Related behaviour: 5 failed logins lock an account for 15 minutes (HTTP 423, `lockedUntil` in the body); a session idle
-for 30 minutes expires; logout revokes the server-side refresh token; refresh tokens rotate (the previous one stops working).
+for 30 minutes expires; logout revokes the server-side refresh token and clears the cookies; refresh tokens rotate (the previous one stops working).
+**Security note:** a copied access token stays valid until its 15-minute expiry after logout, by design (there is no access-token blacklist).
 Validation errors are field-level: `{ "message": "Validation failed", "errors": [{ "field": "password", "messages": ["..."] }] }`.
 
 ## 8. Testing
