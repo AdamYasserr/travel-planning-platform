@@ -36,7 +36,10 @@ export class PaymentsController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get the current user’s payment status' })
+  @ApiOperation({
+    summary: 'Get the current user’s payment status',
+    description: 'Includes `refundId` (equal to the payment id) when a refund exists; use it with GET /refunds/:id.',
+  })
   getStatus(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
     if (!id) {
       throw new BadRequestException('Payment ID is required');

@@ -196,7 +196,37 @@ export class PaymentsService {
       .lean()
       .exec();
     if (!payment) throw new NotFoundException('Payment not found');
-    return payment;
+    return { ...payment, refundId: this.refundIdFor(payment) };
+  }
+
+  /**
+   * GET /refunds/:id. A refund is not a separate record yet: its id is the payment id
+   * (`refundId` on the payment and on the cancellation response).
+   */
+  async getRefundForUser(userId: string, refundId: string) {
+    const payment = await this.getForUser(userId, refundId);
+    if (!payment.refundId) {
+      throw new NotFoundException('No refund exists for this payment');
+    }
+    return {
+      refundId: payment.refundId,
+      paymentId: String(payment._id),
+      bookingType: payment.bookingType,
+      bookingId: payment.bookingId,
+      status: payment.refundStatus,
+      percentage: payment.refundPercentage,
+      amountMinor: payment.refundAmountMinor,
+      currency: payment.currency,
+      requestedAt: payment.refundRequestedAt ?? null,
+      refundedAt: payment.refundedAt ?? null,
+    };
+  }
+
+  private refundIdFor(payment: { _id: unknown; refundStatus?: RefundStatus; refundAmountMinor?: number }): string | null {
+    const hasRefund =
+      (payment.refundStatus ?? RefundStatus.NOT_REQUIRED) !== RefundStatus.NOT_REQUIRED ||
+      (payment.refundAmountMinor ?? 0) > 0;
+    return hasRefund ? String(payment._id) : null;
   }
 
   async handleStripeWebhook(payload: Buffer, signature: string) {
@@ -443,6 +473,8 @@ export class PaymentsService {
       booking: result.booking,
       refundPercentage: result.refundPercentage,
       refundStatus: result.payment?.refundStatus ?? RefundStatus.NOT_REQUIRED,
+      // Use this id with GET /refunds/:id (equals the payment id); null when nothing is refunded.
+      refundId: result.payment ? this.refundIdFor(result.payment) : null,
     };
   }
 

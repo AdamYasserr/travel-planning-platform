@@ -405,6 +405,7 @@ describe('PaymentsService', () => {
     );
 
     expect(result.refundPercentage).toBe(50);
+    expect(result.refundId).toBe(paymentId.toString()); // use with GET /refunds/:id
     expect(stripeService.createRefund).toHaveBeenCalledWith(
       expect.objectContaining({ amountMinor: 10000 }),
     );
@@ -538,6 +539,55 @@ describe('PaymentsService', () => {
         },
         { $set: { status: HotelBookingStatus.COMPLETED, completedAt: now } },
       );
+    });
+  });
+
+  describe('refund id (GET /refunds/:id uses the payment id)', () => {
+    it('GET /payments/:id returns refundId equal to the payment id once a refund exists', async () => {
+      payment.refundStatus = RefundStatus.PENDING;
+      payment.refundAmountMinor = 10000;
+      const result: any = await service.getForUser(userId.toString(), paymentId.toString());
+      expect(result.refundId).toBe(paymentId.toString());
+    });
+
+    it('refundId is null when no refund applies', async () => {
+      const result: any = await service.getForUser(userId.toString(), paymentId.toString());
+      expect(result.refundId).toBeNull();
+    });
+
+    it('an unpaid hold cancellation (Expired, nothing to refund) returns refundId null', async () => {
+      payment.status = PaymentStatus.PENDING;
+      hotelBookingModel.findOneAndUpdate = jest.fn(() =>
+        query({ ...hotelBooking, status: HotelBookingStatus.EXPIRED }),
+      );
+      const result = await service.cancelBooking(userId.toString(), PaymentBookingType.HOTEL, bookingId.toString());
+      expect(result.refundId).toBeNull();
+    });
+
+    it('getRefundForUser returns the refund view keyed by that id', async () => {
+      payment.refundStatus = RefundStatus.SUCCEEDED;
+      payment.refundPercentage = 50;
+      payment.refundAmountMinor = 10000;
+      payment.refundedAt = new Date('2030-01-01');
+      const refund = await service.getRefundForUser(userId.toString(), paymentId.toString());
+      expect(refund).toEqual({
+        refundId: paymentId.toString(),
+        paymentId: paymentId.toString(),
+        bookingType: PaymentBookingType.HOTEL,
+        bookingId,
+        status: RefundStatus.SUCCEEDED,
+        percentage: 50,
+        amountMinor: 10000,
+        currency: 'egp',
+        requestedAt: null,
+        refundedAt: new Date('2030-01-01'),
+      });
+    });
+
+    it('getRefundForUser is 404 when the payment has no refund or is not yours', async () => {
+      await expect(service.getRefundForUser(userId.toString(), paymentId.toString())).rejects.toThrow('No refund exists for this payment');
+      paymentModel.findOne = jest.fn(() => query(null));
+      await expect(service.getRefundForUser(new Types.ObjectId().toString(), paymentId.toString())).rejects.toThrow('Payment not found');
     });
   });
 });

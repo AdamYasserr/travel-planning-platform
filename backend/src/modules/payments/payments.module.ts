@@ -15,6 +15,7 @@ import {
   CabinInventorySchema,
 } from '../flights/schemas/cabin-inventory.schema';
 import { PaymentsController } from './payments.controller';
+import { RefundsController } from './refunds.controller';
 import { PaymentsService } from './payments.service';
 import { Payment, PaymentSchema, StripeWebhookEvent, StripeWebhookEventSchema } from './schemas/payment.schema';
 import { StripeWebhookController } from '../../integrations/stripe/stripe-webhook.controller';
@@ -30,7 +31,7 @@ import { StripeWebhookController } from '../../integrations/stripe/stripe-webhoo
       { name: CabinInventory.name, schema: CabinInventorySchema },
     ]),
   ],
-  controllers: [PaymentsController, StripeWebhookController],
+  controllers: [PaymentsController, RefundsController, StripeWebhookController],
   providers: [PaymentsService],
   exports: [PaymentsService, MongooseModule],
 })
