@@ -154,6 +154,7 @@ describe('PaymentsService', () => {
         url: 'https://checkout.stripe.test/session',
       })),
       expireCheckoutSession: jest.fn(async () => undefined),
+      cancelPaymentIntent: jest.fn(async () => undefined),
       createRefund: jest.fn(async () => ({
         id: 're_test_refund',
         amount: 20000,
@@ -432,7 +433,7 @@ describe('PaymentsService', () => {
     paymentModel.findOne = jest.fn(() => query(null));
     flightBookingModel.findOneAndUpdate = jest.fn(() => query({
       ...flightBooking,
-      status: FlightBookingStatus.CANCELLED,
+      status: FlightBookingStatus.EXPIRED,
     }));
 
     await service.cancelBooking(
@@ -463,5 +464,80 @@ describe('PaymentsService', () => {
     ).rejects.toThrow('The airline cancellation policy is not configured');
     expect(flightBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
     expect(stripeService.createRefund).not.toHaveBeenCalled();
+  });
+
+  it('releases an unpaid hold as Expired (not Cancelled) and cancels the Stripe session and intent', async () => {
+    payment.status = PaymentStatus.PENDING;
+    payment.stripePaymentIntentId = 'pi_pending_1';
+    hotelBookingModel.findOneAndUpdate = jest.fn(() =>
+      query({ ...hotelBooking, status: HotelBookingStatus.EXPIRED }),
+    );
+
+    const result = await service.cancelBooking(
+      userId.toString(),
+      PaymentBookingType.HOTEL,
+      bookingId.toString(),
+    );
+
+    const [filter, update] = hotelBookingModel.findOneAndUpdate.mock.calls[0] as any[];
+    expect(filter.status).toBe(HotelBookingStatus.PENDING_PAYMENT);
+    expect(update.$set.status).toBe(HotelBookingStatus.EXPIRED);
+    expect(update.$set.cancelledAt).toBeUndefined();
+    expect(payment.status).toBe(PaymentStatus.EXPIRED);
+    expect(stripeService.expireCheckoutSession).toHaveBeenCalledWith('cs_test_session');
+    expect(stripeService.cancelPaymentIntent).toHaveBeenCalledWith('pi_pending_1');
+    expect(result.booking).toMatchObject({ status: HotelBookingStatus.EXPIRED });
+  });
+
+  it('does not cancel a PaymentIntent that already succeeded', async () => {
+    payment.status = PaymentStatus.SUCCEEDED;
+    payment.stripePaymentIntentId = 'pi_paid_1';
+
+    await service.cancelBooking(
+      userId.toString(),
+      PaymentBookingType.HOTEL,
+      bookingId.toString(),
+    );
+
+    expect(stripeService.cancelPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it('refuses to cancel a confirmed flight after departure (FLT-26)', async () => {
+    flightBooking.status = FlightBookingStatus.CONFIRMED;
+    flightBooking.departureTime = new Date(Date.now() - 60_000);
+    payment.status = PaymentStatus.SUCCEEDED;
+
+    await expect(
+      service.cancelBooking(
+        userId.toString(),
+        PaymentBookingType.FLIGHT,
+        bookingId.toString(),
+      ),
+    ).rejects.toThrow('cannot be cancelled after departure');
+    expect(flightBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(stripeService.createRefund).not.toHaveBeenCalled();
+  });
+
+  describe('completeFinishedBookings (GEN-11)', () => {
+    it('completes confirmed flights past departure and hotels past the check-out day', async () => {
+      const now = new Date('2030-06-10T12:00:00.000Z');
+      hotelBookingModel.updateMany = jest.fn(() => query({ modifiedCount: 2 }));
+      flightBookingModel.updateMany = jest.fn(() => query({ modifiedCount: 1 }));
+
+      const result = await service.completeFinishedBookings(now);
+
+      expect(result).toEqual({ hotels: 2, flights: 1 });
+      expect(flightBookingModel.updateMany).toHaveBeenCalledWith(
+        { status: FlightBookingStatus.CONFIRMED, departureTime: { $lte: now } },
+        { $set: { status: FlightBookingStatus.COMPLETED, completedAt: now } },
+      );
+      expect(hotelBookingModel.updateMany).toHaveBeenCalledWith(
+        {
+          status: HotelBookingStatus.CONFIRMED,
+          checkOutDate: { $lte: new Date('2030-06-09T12:00:00.000Z') },
+        },
+        { $set: { status: HotelBookingStatus.COMPLETED, completedAt: now } },
+      );
+    });
   });
 });

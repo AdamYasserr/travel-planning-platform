@@ -107,6 +107,9 @@ export class FlightBooking {
 
   @Prop({ type: Date, default: null })
   cancelledAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  completedAt?: Date | null;
 }
 
 export const FlightBookingSchema =

@@ -98,6 +98,12 @@ export class StripeService {
     return this.getClient().checkout.sessions.expire(sessionId);
   }
 
+  async cancelPaymentIntent(
+    paymentIntentId: string,
+  ): Promise<Stripe.PaymentIntent> {
+    return this.getClient().paymentIntents.cancel(paymentIntentId);
+  }
+
   async createRefund(input: {
     paymentIntentId: string;
     amountMinor: number;

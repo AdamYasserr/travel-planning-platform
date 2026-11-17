@@ -13,6 +13,7 @@ import { Types } from 'mongoose';
 import Stripe from 'stripe';
 
 import { StripeService } from '../../integrations/stripe/stripe.service';
+import { assertBookingTransition } from '../../common/booking/booking-status';
 import {
   FlightBooking,
 } from '../flight-bookings/schemas/flight-booking.schema';
@@ -35,6 +36,7 @@ import { RefundStatus } from './enums/refund-status.enum';
 import { CreateCheckoutSessionDto } from './dto/payments.dto';
 
 const EXPIRATION_BATCH_SIZE = 100;
+const DAY_MS = 86_400_000;
 
 type CheckoutBooking = (HotelBooking | FlightBooking) & {
   _id: Types.ObjectId;
@@ -45,6 +47,7 @@ type CancellationResult = {
   payment?: Payment | null;
   refundPercentage: number;
   expireSessionId?: string;
+  cancelPaymentIntentId?: string;
   retryRefund?: boolean;
   conflict?: string;
 };
@@ -320,12 +323,14 @@ export class PaymentsService {
             };
             return;
           }
+          // GEN-11: only Confirmed -> Cancelled is allowed, so a user abandoning an unpaid
+          // hold releases it as Expired (rooms/seats are freed, Stripe session/intent cancelled).
           const cancelled = await this.updateBookingStatus(
             bookingType,
             booking._id,
             userId,
             pendingStatus,
-            cancelledStatus,
+            this.expiredStatus(bookingType),
             now,
             session,
           );
@@ -344,6 +349,10 @@ export class PaymentsService {
             payment,
             refundPercentage: 0,
             expireSessionId: payment?.stripeCheckoutSessionId,
+            cancelPaymentIntentId:
+              payment && payment.status !== PaymentStatus.SUCCEEDED
+                ? payment.stripePaymentIntentId
+                : undefined,
           };
           return;
         }
@@ -354,6 +363,18 @@ export class PaymentsService {
             payment,
             refundPercentage: 0,
             conflict: 'A confirmed booking has no successful payment record',
+          };
+          return;
+        }
+        if (this.isFinished(bookingType, booking, now)) {
+          result = {
+            booking,
+            payment,
+            refundPercentage: 0,
+            conflict:
+              bookingType === PaymentBookingType.FLIGHT
+                ? 'A flight booking cannot be cancelled after departure'
+                : 'A hotel booking cannot be cancelled after check-out',
           };
           return;
         }
@@ -414,9 +435,7 @@ export class PaymentsService {
 
     if (!result) throw new ServiceUnavailableException('Booking cancellation did not complete');
     if (result.conflict) throw new ConflictException(result.conflict);
-    if (result.expireSessionId) {
-      await this.expireStripeSession(result.expireSessionId);
-    }
+    await this.releaseStripePayment(result.expireSessionId, result.cancelPaymentIntentId);
     if (result.retryRefund && result.payment) {
       result.payment = await this.processRefund(result.payment);
     }
@@ -457,6 +476,35 @@ export class PaymentsService {
     for (const booking of flightBookings) {
       await this.expireBooking(PaymentBookingType.FLIGHT, booking._id.toString(), now);
     }
+  }
+
+  /**
+   * GEN-11 shared job: Confirmed -> Completed.
+   * Hotel: once the check-out day has passed. Flight: once departure time has passed (not arrival),
+   * so there is never a window where a departed flight is still cancellable (FLT-26).
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async completeFinishedBookings(now = new Date()) {
+    assertBookingTransition(HotelBookingStatus.CONFIRMED, HotelBookingStatus.COMPLETED);
+    assertBookingTransition(FlightBookingStatus.CONFIRMED, FlightBookingStatus.COMPLETED);
+    const [hotels, flights] = await Promise.all([
+      this.hotelBookingModel
+        .updateMany(
+          {
+            status: HotelBookingStatus.CONFIRMED,
+            checkOutDate: { $lte: new Date(now.getTime() - DAY_MS) },
+          },
+          { $set: { status: HotelBookingStatus.COMPLETED, completedAt: now } },
+        )
+        .exec(),
+      this.flightBookingModel
+        .updateMany(
+          { status: FlightBookingStatus.CONFIRMED, departureTime: { $lte: now } },
+          { $set: { status: FlightBookingStatus.COMPLETED, completedAt: now } },
+        )
+        .exec(),
+    ]);
+    return { hotels: hotels.modifiedCount, flights: flights.modifiedCount };
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -778,6 +826,7 @@ export class PaymentsService {
   ) {
     const session = await this.connection.startSession();
     let stripeSessionId: string | undefined;
+    let stripePaymentIntentId: string | undefined;
     try {
       await session.withTransaction(async () => {
         const payment = await this.paymentModel
@@ -796,6 +845,9 @@ export class PaymentsService {
         if (expired && payment) {
           stripeSessionId = payment.stripeCheckoutSessionId;
           if (payment.status !== PaymentStatus.SUCCEEDED) {
+            stripePaymentIntentId = payment.stripePaymentIntentId;
+          }
+          if (payment.status !== PaymentStatus.SUCCEEDED) {
             payment.status = PaymentStatus.EXPIRED;
             await this.persistPayment(payment, session);
           }
@@ -804,7 +856,7 @@ export class PaymentsService {
     } finally {
       await session.endSession();
     }
-    if (stripeSessionId) await this.expireStripeSession(stripeSessionId);
+    await this.releaseStripePayment(stripeSessionId, stripePaymentIntentId);
   }
 
   private async expireBookingInTransaction(
@@ -814,6 +866,10 @@ export class PaymentsService {
     session: ClientSession,
     force = false,
   ) {
+    assertBookingTransition(
+      this.pendingStatus(bookingType),
+      this.expiredStatus(bookingType),
+    );
     if (bookingType === PaymentBookingType.HOTEL) {
       const expired = await this.hotelBookingModel
         .findOneAndUpdate(
@@ -875,6 +931,7 @@ export class PaymentsService {
     session: ClientSession,
     clearHold = false,
   ): Promise<CheckoutBooking | null> {
+    assertBookingTransition(oldStatus, newStatus);
     const update: Record<string, unknown> = {
       status: newStatus,
       ...(newStatus === this.cancelledStatus(bookingType)
@@ -975,6 +1032,38 @@ export class PaymentsService {
     return bookingType === PaymentBookingType.HOTEL
       ? HotelBookingStatus.CANCELLED
       : FlightBookingStatus.CANCELLED;
+  }
+
+  private expiredStatus(bookingType: PaymentBookingType) {
+    return bookingType === PaymentBookingType.HOTEL
+      ? HotelBookingStatus.EXPIRED
+      : FlightBookingStatus.EXPIRED;
+  }
+
+  /** Hotel: check-out day is over. Flight: departure time has passed (FLT-26). */
+  private isFinished(
+    bookingType: PaymentBookingType,
+    booking: HotelBooking | FlightBooking,
+    now: Date,
+  ) {
+    if (bookingType === PaymentBookingType.HOTEL) {
+      const checkOut = (booking as HotelBooking).checkOutDate;
+      return !!checkOut && checkOut.getTime() + DAY_MS <= now.getTime();
+    }
+    const departure = (booking as FlightBooking & { departureTime?: Date }).departureTime;
+    return !!departure && departure.getTime() <= now.getTime();
+  }
+
+  /** Best effort: expire the Checkout Session and cancel its PaymentIntent (PAY-01). */
+  private async releaseStripePayment(sessionId?: string, paymentIntentId?: string) {
+    if (sessionId) await this.expireStripeSession(sessionId);
+    if (paymentIntentId) {
+      try {
+        await this.stripeService.cancelPaymentIntent(paymentIntentId);
+      } catch {
+        this.logger.warn('A PaymentIntent could not be cancelled; webhook safeguards remain active');
+      }
+    }
   }
 
   private async expireStripeSession(sessionId: string) {

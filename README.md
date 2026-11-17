@@ -116,6 +116,19 @@ npm run seed:reference -- ./other-dir  # or a custom folder (also: REFERENCE_DAT
   unknown IDs are rejected with `400`. Supported currencies are the distinct `currency` values
   of `Countries.csv` (`GET /api/currencies`). Run the import before creating hotels, flights or itineraries.
 
+### Booking holds, concurrency and lifecycle (HTL-18, FLT-22, GEN-11)
+
+- Proceeding to payment holds every selected room (or flight seats) as one **Pending Payment**
+  reservation for `BOOKING_HOLD_MINUTES` (default **10**, one constant for hotels and flights).
+- The hotel availability check and the hold run in one MongoDB transaction; every writer that changes
+  room availability (hold, block, availability, deactivate, delete) also bumps `Room.holdSeq`, so two
+  overlapping requests cannot both succeed. Persistent contention returns `409`, never `500`.
+- Allowed status transitions only: Pending Payment -> Confirmed -> Completed, Pending Payment -> Expired,
+  Confirmed -> Cancelled. Cancelling an unpaid hold releases it as Expired.
+- A per-minute job completes Confirmed bookings (hotel: after the check-out day; flight: after departure).
+- `npm test` is fast and offline. `npm run test:integration` runs the concurrency tests against an
+  in-memory MongoDB replica set (first run downloads a mongod binary; never touches Atlas).
+
 ## 8. Testing
 
 Run unit tests:
