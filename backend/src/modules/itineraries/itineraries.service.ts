@@ -5,6 +5,8 @@ import {
 } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { isValidObjectId, Model, Types } from "mongoose";
+import { ReferenceValidationService } from "../reference-data/reference-validation.service";
+import { SupportedCurrenciesService } from "../reference-data/supported-currencies.service";
 import { FxRatesService } from "../../integrations/fx-rates/fx-rates.service";
 import { FlightBooking } from "../flight-bookings/schemas/flight-booking.schema";
 import { FlightBookingStatus } from "../flight-bookings/enums/flight-booking-status.enum";
@@ -38,27 +40,39 @@ export class ItinerariesService {
     @InjectModel(FlightBooking.name)
     private readonly flightBookings: Model<FlightBooking>,
     private readonly fxRates: FxRatesService,
+    private readonly references: ReferenceValidationService,
+    private readonly currencies: SupportedCurrenciesService,
   ) {}
 
   async create(ownerId: string, dto: CreateItineraryDto) {
     const startDate = this.parseDate(dto.startDate, "startDate");
     const endDate = dto.endDate ? this.parseDate(dto.endDate, "endDate") : null;
     this.validateDateRange(startDate, endDate);
+    const countryIds = await this.references.assertCountryCodes(
+      dto.countryIds,
+      "countryIds",
+    );
+    const displayCurrency = dto.displayCurrency
+      ? await this.currencies.assertSupported(
+          dto.displayCurrency,
+          "displayCurrency",
+        )
+      : "USD";
     const itinerary: any = await this.itineraries.create({
       ownerId: new Types.ObjectId(ownerId),
       title: dto.title,
-      countryIds: dto.countryIds.map((id) => new Types.ObjectId(id)),
+      countryIds,
       startDate,
       endDate,
       days: [],
       visibility: dto.visibility ?? ItineraryVisibility.PRIVATE,
-      displayCurrency: (dto.displayCurrency ?? "USD").toUpperCase(),
+      displayCurrency,
     } as any);
     return this.present(itinerary, itinerary.displayCurrency);
   }
 
   async list(ownerId: string, displayCurrency?: string) {
-    const currency = this.normalizeDisplayCurrency(displayCurrency);
+    const currency = await this.normalizeDisplayCurrency(displayCurrency);
     const rows = await this.itineraries
       .find({ ownerId })
       .sort({ startDate: 1, _id: 1 });
@@ -71,7 +85,7 @@ export class ItinerariesService {
     const itinerary = await this.findOwned(ownerId, id);
     return this.present(
       itinerary,
-      this.normalizeDisplayCurrency(displayCurrency) ??
+      (await this.normalizeDisplayCurrency(displayCurrency)) ??
         itinerary.displayCurrency,
     );
   }
@@ -89,14 +103,18 @@ export class ItinerariesService {
 
     if (dto.title !== undefined) itinerary.title = dto.title;
     if (dto.countryIds !== undefined)
-      itinerary.countryIds = dto.countryIds.map(
-        (countryId) => new Types.ObjectId(countryId),
-      );
+      itinerary.countryIds = (await this.references.assertCountryCodes(
+        dto.countryIds,
+        "countryIds",
+      )) as any;
     if (dto.startDate !== undefined) itinerary.startDate = startDate;
     if (dto.endDate !== undefined) itinerary.endDate = endDate;
     if (dto.visibility !== undefined) itinerary.visibility = dto.visibility;
     if (dto.displayCurrency !== undefined)
-      itinerary.displayCurrency = dto.displayCurrency.toUpperCase();
+      itinerary.displayCurrency = await this.currencies.assertSupported(
+        dto.displayCurrency,
+        "displayCurrency",
+      );
 
     if (
       endDate &&
@@ -221,9 +239,10 @@ export class ItinerariesService {
         "The itinerary date range already contains all available days",
       );
     }
+    const [cityId] = await this.references.assertCityIds([dto.cityId]);
     itinerary.days.push({
       dayNumber: itinerary.days.length + 1,
-      cityId: new Types.ObjectId(dto.cityId),
+      cityId,
       notes: dto.notes ?? "",
       activities: [],
       budgets: [],
@@ -239,8 +258,10 @@ export class ItinerariesService {
     dto: UpdateItineraryDayDto,
   ) {
     const { itinerary, day } = await this.findDay(ownerId, id, dayId);
-    if (dto.cityId !== undefined)
-      day.cityId = new Types.ObjectId(dto.cityId) as any;
+    if (dto.cityId !== undefined) {
+      const [cityId] = await this.references.assertCityIds([dto.cityId]);
+      day.cityId = cityId;
+    }
     if (dto.notes !== undefined) day.notes = dto.notes;
     await itinerary.save();
     return this.present(itinerary, itinerary.displayCurrency);
@@ -332,6 +353,7 @@ export class ItinerariesService {
     dto: CreateBudgetEntryDto,
   ) {
     const { itinerary, day } = await this.findDay(ownerId, id, dayId);
+    dto.currency = await this.currencies.assertSupported(dto.currency);
     day.budgets.push({
       ...dto,
       type: dto.type ?? BudgetEntryType.PLANNED,
@@ -355,6 +377,8 @@ export class ItinerariesService {
       (item) => String(item._id) === entryId,
     );
     if (!entry) throw new NotFoundException("Budget entry not found");
+    if (dto.currency !== undefined)
+      dto.currency = await this.currencies.assertSupported(dto.currency);
     Object.assign(
       entry,
       dto,
@@ -389,10 +413,15 @@ export class ItinerariesService {
   ) {
     const { itinerary, day } = await this.findDay(ownerId, id, dto.dayId);
     if (!day) throw new NotFoundException("Day not found");
+    await this.references.assertCityIds(
+      [dto.fromCityId, dto.toCityId],
+      "fromCityId/toCityId",
+    );
+    dto.currency = await this.currencies.assertSupported(dto.currency);
     itinerary.transportCosts.push({
       ...dto,
-      fromCityId: new Types.ObjectId(dto.fromCityId),
-      toCityId: new Types.ObjectId(dto.toCityId),
+      fromCityId: dto.fromCityId.trim(),
+      toCityId: dto.toCityId.trim(),
       dayId: new Types.ObjectId(dto.dayId),
     } as any);
     await itinerary.save();
@@ -411,12 +440,18 @@ export class ItinerariesService {
     );
     if (!cost) throw new NotFoundException("Transport cost not found");
     if (dto.dayId) this.findDayInDocument(itinerary, dto.dayId);
+    if (dto.fromCityId)
+      await this.references.assertCityIds([dto.fromCityId], "fromCityId");
+    if (dto.toCityId)
+      await this.references.assertCityIds([dto.toCityId], "toCityId");
+    if (dto.currency !== undefined)
+      dto.currency = await this.currencies.assertSupported(dto.currency);
     Object.assign(
       cost,
       dto,
       dto.dayId ? { dayId: new Types.ObjectId(dto.dayId) } : {},
-      dto.fromCityId ? { fromCityId: new Types.ObjectId(dto.fromCityId) } : {},
-      dto.toCityId ? { toCityId: new Types.ObjectId(dto.toCityId) } : {},
+      dto.fromCityId ? { fromCityId: dto.fromCityId.trim() } : {},
+      dto.toCityId ? { toCityId: dto.toCityId.trim() } : {},
     );
     await itinerary.save();
     return this.present(itinerary, itinerary.displayCurrency);
@@ -591,13 +626,13 @@ export class ItinerariesService {
     return Math.floor((utcEnd - utcStart) / 86400000) + 1;
   }
 
-  private normalizeDisplayCurrency(value?: string) {
+  private async normalizeDisplayCurrency(value?: string) {
     if (!value) return undefined;
     const normalized = value.trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(normalized))
       throw new BadRequestException(
         "displayCurrency must be a three-letter currency code",
       );
-    return normalized;
+    return this.currencies.assertSupported(normalized, "displayCurrency");
   }
 }

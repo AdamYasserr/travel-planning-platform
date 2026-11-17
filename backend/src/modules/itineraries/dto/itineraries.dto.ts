@@ -29,14 +29,20 @@ export class CreateItineraryDto {
 
   @ApiProperty({
     type: [String],
-    description: "MongoDB ObjectIds of predefined countries",
-    example: ["507f1f77bcf86cd799439011"],
+    description: "Dataset country codes of imported countries",
+    example: ["EG", "AE"],
     minItems: 1,
   })
   @IsArray()
   @ArrayMinSize(1)
   @ArrayUnique()
-  @IsMongoId({ each: true })
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map((v) => (typeof v === "string" ? v.trim().toUpperCase() : v))
+      : value,
+  )
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
   countryIds: string[];
 
   @ApiProperty({
@@ -76,10 +82,12 @@ export class UpdateItineraryDto extends PartialType(CreateItineraryDto) {}
 
 export class CreateItineraryDayDto {
   @ApiProperty({
-    description: "MongoDB ObjectId of a predefined city",
-    example: "507f1f77bcf86cd799439011",
+    description: "Dataset city_id of an imported city",
+    example: "cairo",
   })
-  @IsMongoId()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
   cityId: string;
 
   @ApiPropertyOptional({ example: "Visit the historic district." })
@@ -176,17 +184,21 @@ export class CreateTransportCostDto {
   mode: string;
 
   @ApiProperty({
-    description: "MongoDB ObjectId of the origin city",
-    example: "507f1f77bcf86cd799439011",
+    description: "Dataset city_id of the origin city",
+    example: "cairo",
   })
-  @IsMongoId()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
   fromCityId: string;
 
   @ApiProperty({
-    description: "MongoDB ObjectId of the destination city",
-    example: "507f1f77bcf86cd799439012",
+    description: "Dataset city_id of the destination city",
+    example: "dubai",
   })
-  @IsMongoId()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
   toCityId: string;
 
   @ApiProperty({ example: 42.5, minimum: 0 })

@@ -6,19 +6,13 @@ export class TransportCost {
   @Prop({ type: String, required: true, trim: true })
   mode: string;
 
-  @Prop({
-    type: MongooseSchema.Types.ObjectId,
-    ref: 'City',
-    required: true,
-  })
-  fromCityId: Types.ObjectId;
+  /** Dataset city_id, e.g. "cairo" */
+  @Prop({ type: String, required: true, trim: true })
+  fromCityId: string;
 
-  @Prop({
-    type: MongooseSchema.Types.ObjectId,
-    ref: 'City',
-    required: true,
-  })
-  toCityId: Types.ObjectId;
+  /** Dataset city_id, e.g. "dubai" */
+  @Prop({ type: String, required: true, trim: true })
+  toCityId: string;
 
   @Prop({ type: Number, required: true, min: 0 })
   amount: number;

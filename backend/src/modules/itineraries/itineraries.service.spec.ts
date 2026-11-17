@@ -1,4 +1,5 @@
 import { jest } from "@jest/globals";
+import { BadRequestException } from "@nestjs/common";
 import { Types } from "mongoose";
 import { ItinerariesService } from "./itineraries.service";
 import { BudgetEntryType } from "./schemas/budget.schema";
@@ -16,12 +17,14 @@ describe("ItinerariesService", () => {
   let hotelModel: Record<string, jest.Mock>;
   let flightModel: Record<string, jest.Mock>;
   let fx: any;
+  let references: any;
+  let currencies: any;
 
   const doc = (overrides: Record<string, unknown> = {}) => ({
     _id: new Types.ObjectId(itineraryId),
     ownerId: new Types.ObjectId(ownerId),
     title: "Trip",
-    countryIds: [new Types.ObjectId()],
+    countryIds: ["EG"],
     startDate: new Date("2099-01-01T00:00:00.000Z"),
     endDate: null,
     days: [],
@@ -68,18 +71,27 @@ describe("ItinerariesService", () => {
         convertedAmount: amount * (from === "EUR" && to === "USD" ? 1.1 : 1),
       })),
     };
+    references = {
+      assertCountryCodes: jest.fn(async (codes: string[]) => codes),
+      assertCityIds: jest.fn(async (ids: string[]) => ids),
+    };
+    currencies = {
+      assertSupported: jest.fn(async (code: string) => code.trim().toUpperCase()),
+    };
     service = new ItinerariesService(
       itineraryModel as never,
       hotelModel as never,
       flightModel as never,
       fx as never,
+      references as never,
+      currencies as never,
     );
   });
 
   it("creates a private owner itinerary with the chosen display currency", async () => {
     await service.create(ownerId, {
       title: "Trip",
-      countryIds: [new Types.ObjectId().toString()],
+      countryIds: ["EG"],
       startDate: "2099-01-01",
       displayCurrency: "eur",
     } as any);
@@ -93,11 +105,57 @@ describe("ItinerariesService", () => {
     );
   });
 
+  describe("reference validation (GEN-12)", () => {
+    const unknown = (kind: string, id: string) =>
+      new BadRequestException(`Unknown ${kind} identifier(s): ${id}`);
+
+    it("stores dataset country codes and rejects unknown countries", async () => {
+      await service.create(ownerId, {
+        title: "Trip",
+        countryIds: ["EG", "AE"],
+        startDate: "2099-01-01",
+      } as any);
+      expect(references.assertCountryCodes).toHaveBeenCalledWith(["EG", "AE"], "countryIds");
+      expect(itineraryModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ countryIds: ["EG", "AE"] }),
+      );
+      references.assertCountryCodes.mockRejectedValueOnce(unknown("country", "ZZ"));
+      itineraryModel.create.mockClear();
+      await expect(
+        service.create(ownerId, { title: "Trip", countryIds: ["ZZ"], startDate: "2099-01-01" } as any),
+      ).rejects.toThrow("Unknown country identifier(s): ZZ");
+      expect(itineraryModel.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unsupported display currency", async () => {
+      currencies.assertSupported.mockRejectedValueOnce(new BadRequestException("Unsupported displayCurrency"));
+      await expect(
+        service.create(ownerId, { title: "Trip", countryIds: ["EG"], startDate: "2099-01-01", displayCurrency: "XXX" } as any),
+      ).rejects.toThrow("Unsupported displayCurrency");
+      expect(itineraryModel.create).not.toHaveBeenCalled();
+    });
+
+    it("validates the city of a new day and does not save an unknown one", async () => {
+      const itinerary = doc();
+      itineraryModel.findOne.mockImplementationOnce((async () => itinerary) as never);
+      references.assertCityIds.mockRejectedValueOnce(unknown("city", "atlantis"));
+      await expect(
+        service.addDay(ownerId, itineraryId, { cityId: "atlantis" } as any),
+      ).rejects.toThrow("Unknown city identifier(s): atlantis");
+      expect(itinerary.save).not.toHaveBeenCalled();
+
+      const ok = doc();
+      itineraryModel.findOne.mockImplementationOnce((async () => ok) as never);
+      await service.addDay(ownerId, itineraryId, { cityId: "cairo" } as any);
+      expect((ok as any).days[0].cityId).toBe("cairo");
+    });
+  });
+
   it("rejects an end date before the start date and ranges over 60 days", async () => {
     await expect(
       service.create(ownerId, {
         title: "Trip",
-        countryIds: [new Types.ObjectId().toString()],
+        countryIds: ["EG"],
         startDate: "2099-01-03",
         endDate: "2099-01-01",
       } as any),
@@ -105,7 +163,7 @@ describe("ItinerariesService", () => {
     await expect(
       service.create(ownerId, {
         title: "Trip",
-        countryIds: [new Types.ObjectId().toString()],
+        countryIds: ["EG"],
         startDate: "2099-01-01",
         endDate: "2099-03-10",
       } as any),

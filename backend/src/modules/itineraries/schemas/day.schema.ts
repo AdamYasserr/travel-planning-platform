@@ -13,12 +13,9 @@ export class ItineraryDay {
   })
   dayNumber: number;
 
-  @Prop({
-    type: MongooseSchema.Types.ObjectId,
-    ref: "City",
-    required: true,
-  })
-  cityId: Types.ObjectId;
+  /** Dataset city_id, e.g. "cairo" */
+  @Prop({ type: String, required: true, trim: true })
+  cityId: string;
 
   @Prop({ type: String, trim: true, default: "" })
   notes: string;

@@ -36,16 +36,16 @@ export class Itinerary {
   title: string;
 
   @Prop({
-    type: [MongooseSchema.Types.ObjectId],
-    ref: "Country",
+    type: [String],
     required: true,
     validate: {
-      validator: (countryIds: Types.ObjectId[]) =>
+      validator: (countryIds: string[]) =>
         Array.isArray(countryIds) && countryIds.length > 0,
       message: "At least one country is required",
     },
   })
-  countryIds: Types.ObjectId[];
+  /** Dataset country codes, e.g. ["EG"] */
+  countryIds: string[];
 
   @Prop({ type: Date, default: null })
   endDate?: Date | null;
