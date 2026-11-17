@@ -18,6 +18,7 @@ import { Airline } from '../airlines/schemas/airline.schema';
 import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { Airport } from '../airports/schemas/airport.schema';
+import { ReferenceValidationService } from '../reference-data/reference-validation.service';
 import { isValidIanaTimeZone, parseFlightInstant } from './timezone.util';
 
 import {
@@ -39,6 +40,8 @@ export class FlightsService {
 
     @InjectModel(Airport.name)
 private readonly airportModel: Model<Airport>,
+
+    private readonly references: ReferenceValidationService,
   ) {}
 
   // Check airline management permission
@@ -94,6 +97,11 @@ private readonly airportModel: Model<Airport>,
       );
     }
 
+    // FLT-02: flights may only use airports from the imported reference list.
+    await this.references.assertAirportCodes(
+      [dto.departureAirport, dto.arrivalAirport],
+      'departureAirport/arrivalAirport',
+    );
     const [departureAirport, arrivalAirport] = await Promise.all([
       this.airportModel.findOne({ iataCode: dto.departureAirport.trim().toUpperCase() }).select('timeZone').lean().exec(),
       this.airportModel.findOne({ iataCode: dto.arrivalAirport.trim().toUpperCase() }).select('timeZone').lean().exec(),
@@ -182,6 +190,10 @@ return this.toLocalFlightResponse(flight);
       dto.arrivalAirport ?? flight.arrivalAirport
     ).trim().toUpperCase();
 
+    await this.references.assertAirportCodes(
+      [departureAirport, arrivalAirport],
+      'departureAirport/arrivalAirport',
+    );
     const [departureAirportRecord, arrivalAirportRecord] = await Promise.all([
       this.airportModel.findOne({ iataCode: departureAirport }).select('timeZone').lean().exec(),
       this.airportModel.findOne({ iataCode: arrivalAirport }).select('timeZone').lean().exec(),

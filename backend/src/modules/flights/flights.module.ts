@@ -30,10 +30,12 @@ import { User, UserSchema } from '../../users/user.schema';
 
 import { FlightsService } from './flights.service';
 import { FlightBookingsModule } from '../flight-bookings/flight-bookings.module';
+import { ReferenceDataModule } from '../reference-data/reference-data.module';
 
 @Module({
   imports: [
     FlightBookingsModule,
+    ReferenceDataModule,
     MongooseModule.forFeature([
       {
         name: Flight.name,
