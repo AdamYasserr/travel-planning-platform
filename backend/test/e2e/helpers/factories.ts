@@ -144,3 +144,55 @@ export async function createAirlineWithFlight(
   if (cabinRes.status !== 201) throw new Error(`cabin create failed: ${cabinRes.status} ${JSON.stringify(cabinRes.body)}`);
   return { airlineId, flightId, seats, admin, moderator };
 }
+
+export interface AirlineFixture {
+  airlineId: string;
+  admin: TestUser;
+  moderator: TestUser;
+}
+
+/** An airline and its moderator, with no flights. Pair with createFlight(). */
+export async function createAirline(ctx: E2EContext, opts: { admin?: TestUser } = {}): Promise<AirlineFixture> {
+  const admin = opts.admin ?? (await createUser(ctx, 'admin'));
+  const code = Array.from({ length: 3 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join('');
+  const res = await admin.agent.post('/api/airlines').send({ name: unique('Air'), code });
+  if (res.status !== 201) throw new Error(`airline create failed: ${res.status} ${JSON.stringify(res.body)}`);
+  const airlineId = idOf(res.body);
+  return { airlineId, admin, moderator: await createUser(ctx, 'moderator', { airlineId }) };
+}
+
+export interface CabinSpec {
+  cabinClass?: string;
+  seats?: number;
+  price?: number;
+  freeBags?: number;
+  maxKg?: number;
+}
+
+/**
+ * A flight on an airline. `departure`/`arrival` are ISO timestamps with an offset, or airport-local date-times
+ * without one (interpreted in that airport's time zone). Default route CAI -> DXB with one Economy cabin.
+ */
+export async function createFlight(
+  ctx: E2EContext,
+  airline: { airlineId: string; moderator: TestUser },
+  o: { from?: string; to?: string; departure: string; arrival: string; cabins?: CabinSpec[] },
+): Promise<string> {
+  const res = await airline.moderator.agent.post('/api/flights').send({
+    flightNumber: `${Math.floor(100 + Math.random() * 900)}${unique('f').slice(-4)}`, airlineId: airline.airlineId,
+    departureAirport: o.from ?? 'CAI', arrivalAirport: o.to ?? 'DXB', departureTime: o.departure, arrivalTime: o.arrival,
+  });
+  if (res.status !== 201) throw new Error(`flight create failed: ${res.status} ${JSON.stringify(res.body)}`);
+  const flightId = idOf(res.body);
+  for (const cabin of o.cabins ?? [{}]) {
+    const c = await airline.moderator.agent.post(`/api/flights/${flightId}/cabins`).send({
+      cabinClass: cabin.cabinClass ?? 'Economy', totalSeats: cabin.seats ?? 10, price: cabin.price ?? 1000, currency: 'EGP',
+      freeBagsCount: cabin.freeBags ?? 1, maxWeightPerBagKg: cabin.maxKg ?? 23,
+    });
+    if (c.status !== 201) throw new Error(`cabin create failed: ${c.status} ${JSON.stringify(c.body)}`);
+  }
+  return flightId;
+}
+
+/** `${day(n)}THH:mm:00.000Z`: a UTC instant on the day `n` days from today. */
+export const at = (n: number, time: string) => `${day(n)}T${time}:00.000Z`;

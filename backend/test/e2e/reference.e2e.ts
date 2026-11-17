@@ -54,6 +54,68 @@ describe('reference data, airports and currencies (GEN-12, FLT-02)', () => {
     expect((await ctx.http().get('/api/attractions')).status).toBe(200);
   });
 
+  describe('public reference and airport lists: strict parameters, page size 10 (GEN-05)', () => {
+    const fields = (res: any) => res.body.errors?.map((e: any) => e.field) ?? [];
+
+    it.each(['/api/airports', '/api/countries', '/api/cities', '/api/attractions'])('%s defaults to 10 per page', async (path) => {
+      const res = await ctx.http().get(path);
+      expect(res.status).toBe(200);
+      expect(res.body.pagination.limit).toBe(10);
+      expect(res.body.items.length).toBeLessThanOrEqual(10);
+    });
+
+    it('limit and page are honoured', async () => {
+      const res = await ctx.http().get('/api/airports?limit=3&page=2');
+      expect(res.body.items).toHaveLength(3);
+      expect(res.body.pagination).toMatchObject({ page: 2, limit: 3, totalItems: 8, totalPages: 3 });
+      expect((await ctx.http().get('/api/airports?limit=100')).status).toBe(200);
+    });
+
+    it.each(['/api/airports', '/api/countries', '/api/cities', '/api/attractions'])('%s: a bad page or limit is 400 on that field', async (path) => {
+      for (const [query, field] of [['page=abc', 'page'], ['page=0', 'page'], ['limit=0', 'limit'], ['limit=101', 'limit'], ['limit=ten', 'limit'], ['limit=2.5', 'limit']]) {
+        const res = await ctx.http().get(`${path}?${query}`);
+        expect([query, res.status, fields(res)]).toEqual([query, 400, [field]]);
+      }
+    });
+
+    it('airports: a malformed countryCode or cityId is 400 on that field', async () => {
+      expect(fields(await ctx.http().get('/api/airports?countryCode=E1'))).toEqual(['countryCode']);
+      expect(fields(await ctx.http().get('/api/airports?countryCode=EGY'))).toEqual(['countryCode']);
+      expect(fields(await ctx.http().get('/api/airports?cityId=bad%20id!'))).toEqual(['cityId']);
+    });
+
+    it('airports: a well-formed but unknown countryCode or cityId is an empty 200', async () => {
+      for (const query of ['countryCode=ZZ', 'cityId=atlantis', 'search=nothing-like-this']) {
+        const res = await ctx.http().get(`/api/airports?${query}`);
+        expect([query, res.status, res.body.items]).toEqual([query, 200, []]);
+        expect(res.body.pagination.totalItems).toBe(0);
+      }
+    });
+
+    it('airports: the filters still work for real values', async () => {
+      expect((await ctx.http().get('/api/airports?countryCode=eg')).body.items.map((a: any) => a.iata_code)).toEqual(['CAI']);
+      expect((await ctx.http().get('/api/airports?cityId=dubai')).body.items.map((a: any) => a.iata_code)).toEqual(['DXB']);
+    });
+
+    it('cities: a malformed parentId is 400, an unknown country code is an empty 200', async () => {
+      expect(fields(await ctx.http().get('/api/cities?parentId=EGY'))).toEqual(['parentId']);
+      expect(fields(await ctx.http().get('/api/cities?parentId=1'))).toEqual(['parentId']);
+      const unknown = await ctx.http().get('/api/cities?parentId=ZZ');
+      expect([unknown.status, unknown.body.items]).toEqual([200, []]);
+    });
+
+    it('attractions: a malformed parentId is 400, an unknown city_id is an empty 200', async () => {
+      expect(fields(await ctx.http().get('/api/attractions?parentId=bad%20id'))).toEqual(['parentId']);
+      const unknown = await ctx.http().get('/api/attractions?parentId=atlantis');
+      expect([unknown.status, unknown.body.items]).toEqual([200, []]);
+    });
+
+    it('an unknown query parameter is 400 on that parameter (countries take no parentId)', async () => {
+      expect(fields(await ctx.http().get('/api/countries?parentId=EG'))).toEqual(['parentId']);
+      expect(fields(await ctx.http().get('/api/airports?colour=blue'))).toEqual(['colour']);
+    });
+  });
+
   describe('references are validated (400)', () => {
     const hotel = (over: Record<string, unknown>) => ({
       name: unique('Hotel'), address: '1 Road', cityId: 'cairo', countryId: 'EG', starClass: 3, checkInTime: '15:00', checkOutTime: '11:00', ...over,
