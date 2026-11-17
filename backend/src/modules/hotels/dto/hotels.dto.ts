@@ -160,6 +160,13 @@ export class CreateHotelDto {
 
 export class UpdateHotelDto extends PartialType(CreateHotelDto) {}
 
+/** PUT /hotels/:id/policies: only the policy fields of the hotel profile. */
+export class UpdateHotelPoliciesDto extends PickType(CreateHotelDto, [
+  'checkInTime',
+  'checkOutTime',
+  'cancellationTiers',
+] as const) {}
+
 export class RoomDateRangeDto {
   @ApiProperty({
     description: 'First bookable date, inclusive, in YYYY-MM-DD format',

@@ -4,6 +4,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Req,
   Get,
   Query,
@@ -23,6 +24,7 @@ import {
   CreateHotelDto,
   CreateRoomDto,
   UpdateHotelDto,
+  UpdateHotelPoliciesDto,
   UpdateRoomDto,
   PaginationQueryDto,
   SetRoomAvailabilityDto,
@@ -67,6 +69,23 @@ export class HotelsController {
       request.user.userId,
     );
   } // Closes update before updateRoom starts.
+
+  // Main route for policies; PATCH /hotels/:hotelId is the general profile update (same service method).
+  @Put(':hotelId/policies')
+  @Roles(UserRole.MODERATOR)
+  @ApiCookieAuth('access_token')
+  @ApiOperation({
+    summary: 'Set hotel policies (check-in/out times and cancellation tiers)',
+    description:
+      'Moderator only, own hotel only. Applies the same update as PATCH /hotels/:id restricted to the policy fields.',
+  })
+  updatePolicies(
+    @Param('hotelId') hotelId: string,
+    @Body() dto: UpdateHotelPoliciesDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.hotelsService.update(hotelId, dto, request.user.userId);
+  }
 
   // HTL-05: Update room beds, occupancy, or price.
   @Patch(':hotelId/rooms/:roomId')
@@ -203,11 +222,35 @@ deleteRoom(
   );
 }
 
+// HTL-08 (main route): moderator view of each room's status for a date range.
+@Get(':hotelId/availability')
+@Roles(UserRole.MODERATOR)
+@ApiCookieAuth('access_token')
+@ApiOperation({
+  summary: 'Get each room status (Available, Booked, Blocked) for a date range',
+  description:
+    'Moderator only, own hotel only. startDate (inclusive) and endDate (exclusive) are required. Booked rooms include the reservation reference. The public customer view is GET /hotels/:id/rooms/available.',
+})
+getAvailability(
+  @Param('hotelId') hotelId: string,
+  @Query() query: RoomStatusQueryDto,
+  @Req() request: AuthenticatedRequest,
+) {
+  return this.hotelsService.getRoomStatuses(
+    hotelId,
+    query,
+    request.user.userId,
+  );
+}
+
 // HTL-08: Show room status for a date range.
 @Get(':hotelId/rooms/status')
 @Roles(UserRole.MODERATOR)
 @ApiCookieAuth('access_token')
-@ApiOperation({ summary: 'Get room statuses for a date range' })
+@ApiOperation({
+  summary: 'Get room statuses for a date range',
+  description: 'Legacy alias of GET /hotels/:id/availability.',
+})
 getRoomStatuses(
   @Param('hotelId') hotelId: string,
   @Query() query: RoomStatusQueryDto,
