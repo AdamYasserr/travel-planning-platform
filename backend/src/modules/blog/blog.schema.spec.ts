@@ -1,4 +1,5 @@
 import { CommentSchema } from './schemas/comment.schema';
+import { PostLikeSchema } from './schemas/post-like.schema';
 
 describe('Comment schema', () => {
   it('defines a chronological index for comments in a post', () => {
@@ -12,5 +13,17 @@ describe('Comment schema', () => {
       createdAt: 1,
       _id: 1,
     });
+  });
+});
+
+describe('PostLike schema', () => {
+  it('enforces one like per user and post with a unique compound index', () => {
+    const uniqueIndex = PostLikeSchema.indexes().find(
+      ([fields, options]) =>
+        'postId' in fields && 'userId' in fields && options?.unique === true,
+    );
+
+    expect(uniqueIndex?.[0]).toEqual({ postId: 1, userId: 1 });
+    expect(uniqueIndex?.[1]).toMatchObject({ unique: true });
   });
 });

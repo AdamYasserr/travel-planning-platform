@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -22,6 +23,7 @@ import {
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 
+import { Public } from '../../common/decorators/public.decorator';
 import { UploadMediaDto } from './dto/upload-media.dto';
 import { MediaService } from './media.service';
 
@@ -31,12 +33,12 @@ interface AuthenticatedRequest extends Request {
 
 @Controller('media')
 @ApiTags('Media')
-@ApiCookieAuth('access_token')
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Upload profile or activity media' })
+  @ApiCookieAuth('access_token')
+  @ApiOperation({ summary: 'Upload profile, activity or post media' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     description: 'JPG or PNG image up to 5 MB.',
@@ -47,11 +49,11 @@ export class MediaController {
         file: { type: 'string', format: 'binary' },
         targetType: {
           type: 'string',
-          enum: ['profile', 'activity'],
+          enum: ['profile', 'activity', 'post'],
         },
         targetId: {
           type: 'string',
-          description: 'Activity MongoDB ObjectId; required for activity images.',
+          description: 'Target MongoDB ObjectId; required for activity or post images.',
         },
       },
     },
@@ -100,7 +102,8 @@ export class MediaController {
   }
 
   @Get(':id/content')
-  @ApiOperation({ summary: 'Retrieve owner-scoped media content' })
+  @ApiCookieAuth('access_token')
+  @ApiOperation({ summary: 'Retrieve your owner-scoped media content' })
   @ApiParam({
     name: 'id',
     description: 'Media MongoDB ObjectId',
@@ -125,5 +128,46 @@ export class MediaController {
       `inline; filename="${content.originalName.replace(/["\\\r\n]/g, '_')}"`,
     );
     response.send(content.buffer);
+  }
+
+  @Get('public/:id/content')
+  @Public()
+  @ApiOperation({ summary: 'Retrieve an image from a public blog post' })
+  @ApiParam({
+    name: 'id',
+    description: 'Media MongoDB ObjectId',
+    example: '507f1f77bcf86cd799439011',
+  })
+  @ApiResponse({ status: 200, description: 'Image bytes returned.' })
+  @ApiResponse({ status: 404, description: 'Public post image not found.' })
+  async getPublicPostContent(
+    @Param('id') mediaId: string,
+    @Res() response: Response,
+  ) {
+    const content = await this.mediaService.getPublicPostContent(mediaId);
+
+    response.setHeader('Content-Type', content.mimeType);
+    response.setHeader(
+      'Content-Disposition',
+      `inline; filename="${content.originalName.replace(/["\\\r\n]/g, '_')}"`,
+    );
+    response.send(content.buffer);
+  }
+
+  @Delete('posts/:postId/images/:imageId')
+  @ApiCookieAuth('access_token')
+  @ApiOperation({ summary: 'Remove an image from your blog post' })
+  @ApiResponse({ status: 200, description: 'Post image deleted successfully.' })
+  @ApiResponse({ status: 404, description: 'Post image not found.' })
+  deletePostImage(
+    @Req() request: AuthenticatedRequest,
+    @Param('postId') postId: string,
+    @Param('imageId') imageId: string,
+  ) {
+    return this.mediaService.deletePostImage(
+      request.user!.userId,
+      postId,
+      imageId,
+    );
   }
 }

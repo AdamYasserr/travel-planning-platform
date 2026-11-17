@@ -28,5 +28,6 @@ import {
     ActivityMediaController,
   ],
   providers: [ItinerariesService],
+  exports: [ItinerariesService],
 })
 export class ItinerariesModule {}

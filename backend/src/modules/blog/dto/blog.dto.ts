@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -19,6 +20,7 @@ import {
 import { PostStatus } from '../enums/post-status.enum';
 
 export const BLOG_PAGE_SIZE = 10;
+export const BLOG_MAX_PAGE = 1000;
 
 function trimTags(value: unknown): unknown {
   return Array.isArray(value)
@@ -85,14 +87,16 @@ export class UpdatePostTagsDto {
 export class PostsQueryDto {
   @ApiPropertyOptional({
     minimum: 1,
+    maximum: BLOG_MAX_PAGE,
     default: 1,
     example: 1,
-    description: '1-based page number. Blog lists use a fixed page size of 10.',
+    description: `1-based page number from 1 to ${BLOG_MAX_PAGE}; blog lists use a fixed page size of 10.`,
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(BLOG_MAX_PAGE)
   page = 1;
 
   @ApiPropertyOptional({ maxLength: 30, example: 'Alexandria' })

@@ -10,6 +10,7 @@ import { UsersService } from '../users/users.service';
 import { UpdateItineraryDto } from './dto/itineraries.dto';
 import { BudgetCategory } from './schemas/budget.schema';
 import { Itinerary } from './schemas/itinerary.schema';
+import { ItineraryVisibility } from './enums/itinerary-visibility.enum';
 
 export interface ItineraryCityGroup {
   cityId: string;
@@ -145,6 +146,26 @@ export class ItinerariesService {
     }
 
     return this.withDerivedDayDates(itinerary);
+  }
+
+  async findPublicByOwnerId(ownerId: string) {
+    if (!Types.ObjectId.isValid(ownerId)) {
+      throw new BadRequestException('Invalid user ID');
+    }
+
+    const itineraries = await this.itineraryModel
+      .find({
+        ownerId: new Types.ObjectId(ownerId),
+        visibility: ItineraryVisibility.PUBLIC,
+      })
+      .select('title countryIds startDate days visibility updatedAt')
+      .sort({ updatedAt: -1, _id: -1 })
+      .lean()
+      .exec();
+
+    return itineraries.map((itinerary) =>
+      this.withDerivedDayDates(itinerary),
+    );
   }
 
   async update(

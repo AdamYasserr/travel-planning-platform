@@ -15,6 +15,15 @@ describe('BlogService Phase 1', () => {
   const postId = '507f1f77bcf86cd799439012';
 
   let service: BlogService;
+  let postLikeModel: {
+    updateOne: jest.Mock;
+    deleteOne: jest.Mock;
+    countDocuments: jest.Mock;
+    deleteMany: jest.Mock;
+  };
+  let userModel: { find: jest.Mock };
+  let mediaService: { preparePostMediaDeletion: jest.Mock };
+  let itinerariesService: { findPublicByOwnerId: jest.Mock };
   let postModel: {
     create: jest.Mock;
     findOne: jest.Mock;
@@ -29,7 +38,27 @@ describe('BlogService Phase 1', () => {
       findOneAndUpdate: jest.fn(),
     };
     commentModel = { create: jest.fn() };
-    service = new BlogService(postModel as never, commentModel as never);
+    postLikeModel = {
+      updateOne: jest.fn(),
+      deleteOne: jest.fn(),
+      countDocuments: jest.fn(),
+      deleteMany: jest.fn(),
+    };
+    userModel = { find: jest.fn() };
+    mediaService = {
+      preparePostMediaDeletion: jest.fn().mockResolvedValue(async () => undefined),
+    };
+    itinerariesService = {
+      findPublicByOwnerId: jest.fn().mockResolvedValue([]),
+    };
+    service = new BlogService(
+      postModel as never,
+      commentModel as never,
+      postLikeModel as never,
+      userModel as never,
+      mediaService as never,
+      itinerariesService as never,
+    );
   });
 
   it.each([PostStatus.DRAFT, PostStatus.PUBLISHED])(
