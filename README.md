@@ -129,6 +129,24 @@ npm run seed:reference -- ./other-dir  # or a custom folder (also: REFERENCE_DAT
 - `npm test` is fast and offline. `npm run test:integration` runs the concurrency tests against an
   in-memory MongoDB replica set (first run downloads a mongod binary; never touches Atlas).
 
+### Authentication cookies and `COOKIE_SECURE`
+
+Auth tokens are only ever sent as `httpOnly` cookies (never in a response body). Cookie flags:
+
+| Setting | Behaviour |
+| --- | --- |
+| `httpOnly` | always on |
+| `Secure` | `COOKIE_SECURE=true` -> on, `false` -> off; **unset -> on when `NODE_ENV=production`, off otherwise** |
+| `SameSite` | `None` when Secure (cross-site frontend), `Lax` otherwise |
+
+Production does not refuse to start with `COOKIE_SECURE=false` (Safari and some browsers drop Secure cookies on plain
+`http://localhost`, which would break a local demo run in production mode); it logs a startup warning instead.
+Behind HTTPS always leave it on. For a local demo in either mode set `COOKIE_SECURE=false` over http, or `true` over https.
+
+Related behaviour: 5 failed logins lock an account for 15 minutes (HTTP 423, `lockedUntil` in the body); a session idle
+for 30 minutes expires; logout revokes the server-side refresh token; refresh tokens rotate (the previous one stops working).
+Validation errors are field-level: `{ "message": "Validation failed", "errors": [{ "field": "password", "messages": ["..."] }] }`.
+
 ## 8. Testing
 
 Run unit tests:
