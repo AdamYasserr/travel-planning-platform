@@ -5,7 +5,9 @@ import {
   Patch,
   Body,
   Param,
+  Query,
   Req,
+  Get,
 } from '@nestjs/common';
 
 import {
@@ -17,6 +19,9 @@ import {
 import type { Request } from 'express';
 
 import { FlightsService } from './flights.service';
+import { FlightSearchService } from './flight-search.service';
+import { FlightSearchQueryDto } from './dto/flight-search.dto';
+import { Public } from '../../common/decorators/public.decorator';
 
 import {
   CreateFlightDto,
@@ -38,7 +43,30 @@ type AuthenticatedRequest = Request & {
 export class FlightsController {
   constructor(
     private readonly flightsService: FlightsService,
+    private readonly flightSearch: FlightSearchService,
   ) {}
+
+  // FLT-11/12/15: public search. Declared BEFORE ':id' so "search" is not read as a flight id.
+  @Get('search')
+  @Public()
+  @ApiOperation({
+    summary: 'Search Scheduled flights (guests allowed)',
+    description:
+      'Scheduled, not-yet-departed flights of active airlines with enough free seats (adults + children) on the LOCAL departure date. ' +
+      'Add returnDate for a round trip: the response then also has return options (destination to origin, local date at the destination, departing after the earliest outbound arrival). ' +
+      'Infants take no seat and pay 10% of the fare. Prices are returned as stored (one platform currency). An empty result is a 200 with "No flights found".',
+  })
+  search(@Query() query: FlightSearchQueryDto) {
+    return this.flightSearch.searchFromQuery(query);
+  }
+
+  // FLT-17: public flight details (placed after 'search').
+  @Get(':id')
+  @Public()
+  @ApiOperation({ summary: 'Flight details: times in local and UTC, cabins, baggage, cancellation policy (guests allowed)' })
+  details(@Param('id') id: string) {
+    return this.flightSearch.details(id);
+  }
 
   // FLT-03: Create a flight
   @Post()

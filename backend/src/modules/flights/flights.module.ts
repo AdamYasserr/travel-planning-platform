@@ -29,6 +29,10 @@ import {
 import { User, UserSchema } from '../../users/user.schema';
 
 import { FlightsService } from './flights.service';
+import { FlightSearchService } from './flight-search.service';
+import { BaggagePolicy, BaggagePolicySchema } from '../airlines/schemas/baggage-policy.schema';
+import { CancellationPolicy, CancellationPolicySchema } from '../airlines/schemas/cancellation-policy.schema';
+import { City, CitySchema } from '../reference-data/schemas/city.schema';
 import { FlightBookingsModule } from '../flight-bookings/flight-bookings.module';
 import { ReferenceDataModule } from '../reference-data/reference-data.module';
 
@@ -57,6 +61,9 @@ import { ReferenceDataModule } from '../reference-data/reference-data.module';
   name: Airport.name,
   schema: AirportSchema,
 },
+      { name: BaggagePolicy.name, schema: BaggagePolicySchema },
+      { name: CancellationPolicy.name, schema: CancellationPolicySchema },
+      { name: City.name, schema: CitySchema },
     ]),
   ],
   controllers: [
@@ -65,6 +72,7 @@ import { ReferenceDataModule } from '../reference-data/reference-data.module';
   ],
   providers: [
     FlightsService,
+    FlightSearchService,
     CabinInventoryService,
     FlightStatusService,
   ],

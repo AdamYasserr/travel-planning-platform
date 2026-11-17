@@ -16,6 +16,11 @@ export function flattenValidationErrors(errors: ValidationError[], parent = ''):
   return out;
 }
 
+/** Throws the same 400 body as the ValidationPipe, for checks that need several fields (e.g. min > max). */
+export function fieldErrors(errors: FieldError[]): BadRequestException {
+  return new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'Validation failed', errors });
+}
+
 /** Field-level validation errors: `{ statusCode, error, message, errors: [{ field, messages }] }`. */
 export function createValidationPipe(): ValidationPipe {
   return new ValidationPipe({

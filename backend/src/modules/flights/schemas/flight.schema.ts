@@ -47,3 +47,6 @@ export class Flight {
 }
 
 export const FlightSchema = SchemaFactory.createForClass(Flight);
+
+// FLT-11 search: equality on the route, range on departure time, status as a trailing filter.
+FlightSchema.index({ departureAirport: 1, arrivalAirport: 1, departureTime: 1, status: 1 });

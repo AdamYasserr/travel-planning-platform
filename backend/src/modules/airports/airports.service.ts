@@ -5,6 +5,7 @@ import { Airport, AirportDocument } from './schemas/airport.schema';
 import { City } from '../reference-data/schemas/city.schema';
 import { Country } from '../reference-data/schemas/country.schema';
 import { AirportQueryDto } from './dto/airport-query.dto';
+import { REFERENCE_PAGE_SIZE } from '../reference-data/dto/reference-query.dto';
 
 @Injectable()
 export class AirportsService {
@@ -23,7 +24,7 @@ export class AirportsService {
       filter.$or = [{ name: { $regex: term, $options: 'i' } }, { iataCode: { $regex: term, $options: 'i' } }];
     }
     const page = query.page ?? 1;
-    const limit = query.limit ?? 50;
+    const limit = query.limit ?? REFERENCE_PAGE_SIZE;
     const [airports, totalItems] = await Promise.all([
       this.airportModel.find(filter).sort({ name: 1, iataCode: 1 }).skip((page - 1) * limit).limit(limit).lean().exec(),
       this.airportModel.countDocuments(filter).exec(),
