@@ -1,3 +1,4 @@
+
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
@@ -15,10 +16,12 @@ import { MediaModule } from './modules/media/media.module';
 import { FxRatesModule } from './integrations/fx-rates/fx-rates.module';
 import { HotelsModule } from './modules/hotels/hotels.module';
 import { ItinerariesModule } from './modules/itineraries/itineraries.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 // Hania - Flight Management Modules
 import { AirlinesModule } from './modules/airlines/airlines.module';
 import { FlightsModule } from './modules/flights/flights.module';
+import { AirportsModule } from './modules/airports/airports.module';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -45,6 +48,7 @@ import { BlogModule } from './modules/blog/blog.module';
     HotelsModule,
     ItinerariesModule,
     FxRatesModule,
+    PaymentsModule,
 
     // Hania - Flight Management Modules
     AirlinesModule,

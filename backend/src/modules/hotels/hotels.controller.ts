@@ -29,6 +29,8 @@ import {
   BlockRoomDto,
   RoomStatusQueryDto,
   HotelDetailsQueryDto,
+  SearchHotelsQueryDto,
+  HotelAvailabilityQueryDto,
 } from './dto/hotels.dto';
 import { HotelsService } from './hotels.service';
 

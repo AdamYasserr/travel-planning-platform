@@ -1,3 +1,4 @@
+
 export default () => ({
   app: {
     name: process.env.APP_NAME || 'Travel Planning Platform API',
@@ -8,9 +9,11 @@ export default () => ({
       .map((origin) => origin.trim())
       .filter(Boolean),
   },
+
   database: {
     uri: process.env.MONGODB_URI,
   },
+
   auth: {
     jwtSecret: process.env.JWT_SECRET,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
@@ -19,16 +22,23 @@ export default () => ({
     cookieSecure: process.env.COOKIE_SECURE === 'true',
     cookieDomain: process.env.COOKIE_DOMAIN || undefined,
   },
+
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
   },
+
+  payments: {
+    currency: (process.env.PAYMENT_CURRENCY || 'egp').toLowerCase(),
+  },
+
   fxRates: {
     apiKey: process.env.FXRATES_API_KEY,
     baseUrl: process.env.FXRATES_BASE_URL || 'https://api.fxratesapi.com',
     cacheTtlMs: Number(process.env.FXRATES_CACHE_TTL_MS || 15 * 60 * 1000),
     staleTtlMs: Number(process.env.FXRATES_STALE_TTL_MS || 24 * 60 * 60 * 1000),
   },
+
   media: {
     storagePath: process.env.MEDIA_STORAGE_PATH || 'uploads/media',
   },
