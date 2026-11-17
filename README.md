@@ -212,6 +212,35 @@ One `NotificationsService.notify(userId, type, payload)` is used for every event
 
 `GET /api/bookings/:id/e-ticket` returns a PDF attachment (`e-ticket-<reference>.pdf`) for a **Confirmed or Completed flight booking**: booking reference, passengers, flight number, airline, departure and arrival airports with **local times**, cabin, baggage allowance, total paid and currency. Seats are assigned at check-in (not stored). Owner or admin only; another user's booking or a hotel booking id is 404; any other status is 409. Built with `pdfkit`.
 
+### Provider views (FLT-29, HTL-22)
+
+- `GET /api/flights/:id/bookings` (that airline's moderator or an admin; anyone else 403): one row per booking with reference, status, passenger names, cabin, passenger counts by type (adult 12+, child 2-11, infant under 2 on the departure day) and booked-at; newest first, 10 per page, optional `status`. The response also lists the seats left in each cabin.
+- `GET /api/flights/:id/passengers/export` (same access): a `text/csv` attachment with one row per passenger of every Confirmed or Completed booking: `booking_reference, full_name, type, cabin, passport_or_id, nationality, status`. `passport_or_id` and `nationality` stay empty until passengers carry those fields. **CSV injection:** a cell that starts with `=`, `+`, `-`, `@` (or a tab or carriage return) gets a leading `'`, and quotes, commas and line breaks are escaped (RFC 4180).
+- `GET /api/hotels/:id/reservations` (that hotel's moderator or an admin): guest name ("Deleted user" for a deactivated account), rooms, check-in/out, status, total and reference; newest first, 10 per page. Filters: `status`, and `from`/`to` (YYYY-MM-DD), which keep stays that overlap the range (both days included).
+
+### Hotel reviews (HTL-23, HTL-24)
+
+- `POST /api/hotel-bookings/:id/review` with `{ "rating": 1-5, "comment"?: "..." }`: the booking's owner, only once the stay is **Completed** (409 otherwise), one review per reservation (a second is 409). `rating` is a whole number (the string `"5"` is rejected); `comment` is at most 1000 characters. A deactivated hotel can still be reviewed by its guest.
+- `PATCH /api/reviews/:id` (the author) and `DELETE /api/reviews/:id` (the author or an admin); anyone else gets 404.
+- Each create, edit and delete runs in one transaction with the hotel's **full recount** of visible reviews (`refreshRating`), so the stored `averageRating`/`ratingCount` never double count and the last delete makes the hotel unrated. Reviews hidden or deleted through report moderation are recounted too. Hotel search (`minRating`), hotel details and the review list all read the stored values; every hotel is recounted once when the app starts (idempotent).
+- `GET /api/hotels/:id/reviews` (public): average, count and the visible reviews, newest first, 10 per page, with rating, comment, author name ("Deleted user" for a deactivated account) and dates. An unknown or inactive hotel is 404. Hotel details embed the 10 newest reviews.
+
+### My bookings: groups and the e-ticket alias (FLT-25, HTL-20, FLT-23)
+
+`GET /api/flight-bookings` and `GET /api/hotel-bookings` take an optional `group`:
+
+| group | contains |
+| --- | --- |
+| `upcoming` | Confirmed, or a still-live Pending Payment hold, whose trip is not finished (a hotel stay in progress counts) |
+| `past` | Completed, or Confirmed and finished before the completion job ran |
+| `cancelled` | Cancelled, Expired, or a Pending Payment hold whose hold has lapsed |
+
+Without `group`, everything is listed as before; any other value is 400. The e-ticket is also served at `GET /api/flight-bookings/:id/e-ticket` (an alias of `GET /api/bookings/:id/e-ticket`, same rules).
+
+### Page size (GEN-05)
+
+Every list defaults to **10 per page**; `limit` is accepted up to 100 and `page`/`limit` must be positive whole numbers (400 otherwise). This covers: admin accounts, bookings, audit logs and reports; posts, my posts, tag posts, the author page and post comments; notifications; flight and hotel bookings; the airline and hotel views above; hotel reviews; reference lists and airports; flight and hotel search.
+
 ### Authentication cookies and `COOKIE_SECURE`
 
 Auth tokens are only ever sent as `httpOnly` cookies (never in a response body). Cookie flags:
@@ -303,7 +332,7 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 
 **Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: accept the policies, open a payment (`POST /api/payments`), then post a fake-signed `payment_intent.succeeded` event to `POST /api/payments/webhook`. Stripe event details live in that helper and in `StripeFake`; `payments.e2e.ts` also builds failure, wrong-amount and late events through the fake.
 
-**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`); shared helpers in `test/e2e/helpers/`:
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`, `provider-views-reviews`); shared helpers in `test/e2e/helpers/`:
 
 | Helper | Purpose |
 | --- | --- |

@@ -75,3 +75,19 @@ How the output was used:
 2. Implemented POST /flights/:id/cancel as one transaction with 100% refunds, a single NotificationsService.notify for every GEN-01 event plus mark-all-read, and the e-ticket PDF.
 3. Reviewed the changes; verified with tsc, unit, integration (including a rollback test) and end-to-end tests, and with mutation checks that break key rules and confirm the tests fail.
 ================================================
+
+================================================
+Date: 2026-11-18
+Student: Adam
+Tool: Claude Code (Claude Opus 5.5)
+Related Requirements: FLT-29, HTL-22, HTL-23, HTL-24, FLT-25, HTL-20, FLT-23, GEN-05
+
+Prompts used:
+1. "Provider views, hotel reviews, grouped booking lists, e-ticket alias, and the page-size sweep. Plan first, wait for my approval, then implement." (with the requirement summary, validation and access rules, test list and mutation checks)
+2. Approval with decisions: do not add passport/nationality fields (leave the CSV columns empty); accept the proposed upcoming/past/cancelled definitions; reservations from/to keep overlapping stays; hotel details use the stored rating with a one-off recount at startup and embed the 10 newest reviews; a deactivated hotel can still be reviewed; fix the midnight flight-search test flake; run only the feature's tests after each commit and the full suites once at the end.
+
+How the output was used:
+1. Set the default page size to 10 on the remaining lists (shared PageQueryDto), added ?group= to both booking lists and the /flight-bookings/:id/e-ticket alias.
+2. Added the airline view of a flight with the CSV passenger export (CSV-injection safe), the hotel reservations list, and hotel reviews with a transactional rating recount and the public review list. Fixed the rating not being recounted after report moderation.
+3. Reviewed the changes; verified with tsc, unit, integration and end-to-end tests, and with mutation checks that break key rules and confirm the tests fail.
+================================================
