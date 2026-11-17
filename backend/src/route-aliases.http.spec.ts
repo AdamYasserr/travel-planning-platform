@@ -27,6 +27,7 @@ import { ItinerariesService } from './modules/itineraries/itineraries.service';
 import { PaymentsController } from './modules/payments/payments.controller';
 import { RefundsController } from './modules/payments/refunds.controller';
 import { PaymentsService } from './modules/payments/payments.service';
+import { HotelReservationsService } from './modules/hotels/hotel-reservations.service';
 import { RefundsService } from './modules/payments/refunds.service';
 
 /** Stands in for the real JWT guard: `x-test-user: <id>:<role>` authenticates, no header = 401. */
@@ -77,6 +78,7 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
         { provide: RefundsService, useValue: refunds },
         { provide: HotelsService, useValue: hotels },
         { provide: HotelSearchService, useValue: {} },
+        { provide: HotelReservationsService, useValue: {} },
         { provide: AuthService, useValue: auth },
         { provide: ConfigService, useValue: { get: () => undefined } },
         { provide: APP_GUARD, useClass: FakeAuthGuard },
