@@ -23,7 +23,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { PaymentBookingType } from '../payments/enums/payment-status.enum';
 import { BOOKING_HOLD_DURATION_MS } from '../../common/booking/booking-hold';
 import { runBookingTransaction } from '../../common/booking/booking-transaction';
-import { activeReservationClause } from './room-reservation.util';
+import { ActiveBooking, activeBookingsFilter, findFreeRooms, isRoomOpenForStay } from '../hotels/room-availability';
 
 
 @Injectable()
@@ -116,40 +116,33 @@ export class HotelBookingsService {
     const currency = rooms[0].currency.toUpperCase();
 
     const now = new Date();
+    // The shared rule (hotels/room-availability.ts): the same one search and rooms/available use.
     const overlappingBookings = await this.bookingModel
-      .find({
-        'rooms.roomId': { $in: roomIds },
-        checkInDate: { $lt: checkOutDate },
-        checkOutDate: { $gt: checkInDate },
-        $or: activeReservationClause(now),
-      })
-      .select({ rooms: 1 })
+      .find(activeBookingsFilter(roomIds, checkInDate, checkOutDate, now))
+      .select({ rooms: 1, checkInDate: 1, checkOutDate: 1 })
       .session(session)
       .lean()
       .exec();
-    const reservedRoomIds = new Set(
-      overlappingBookings.flatMap((booking) =>
-        booking.rooms.map((bookingRoom) => bookingRoom.roomId.toString()),
-      ),
+    const freeRoomIds = new Set(
+      findFreeRooms(rooms, overlappingBookings as ActiveBooking[], checkInDate, checkOutDate).map((room) => room._id.toString()),
     );
 
     const roomById = new Map(rooms.map((room) => [room._id.toString(), room]));
     for (const request of dto.rooms) {
       const room = roomById.get(request.roomId.toLowerCase());
-      if (!room || reservedRoomIds.has(request.roomId.toLowerCase())) {
+      if (!room) {
+        throw new ConflictException('One or more selected rooms are unavailable');
+      }
+      const isFree = freeRoomIds.has(room._id.toString());
+      // Reserved by someone else (the room itself is open for these dates).
+      if (!isFree && isRoomOpenForStay(room, checkInDate, checkOutDate)) {
         throw new ConflictException('One or more selected rooms are unavailable');
       }
       if (request.adults + request.childrenAges.length > room.maxOccupancy) {
         throw new BadRequestException(`Guest count exceeds room capacity for ${room.name}`);
       }
-      if (
-        !this.isStayCovered(room.availabilityRanges, checkInDate, checkOutDate) ||
-        room.blockedRanges.some(
-          (range) =>
-            new Date(range.startDate).getTime() < checkOutDate.getTime() &&
-            new Date(range.endDate).getTime() > checkInDate.getTime(),
-        )
-      ) {
+      // Outside the bookable ranges, blocked or inactive.
+      if (!isFree) {
         throw new ConflictException(`Room ${room.name} is not available for the selected dates`);
       }
     }
@@ -275,25 +268,4 @@ export class HotelBookingsService {
       throw new BadRequestException('Each room must include at least one guest');
     }
   }
-
-  private isStayCovered(
-    ranges: Array<{ startDate: Date; endDate: Date }>,
-    checkIn: Date,
-    checkOut: Date,
-  ): boolean {
-    const sortedRanges = [...ranges].sort(
-      (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime(),
-    );
-    let coveredUntil = checkIn.getTime();
-    for (const range of sortedRanges) {
-      const start = new Date(range.startDate).getTime();
-      const end = new Date(range.endDate).getTime();
-      if (end <= coveredUntil) continue;
-      if (start > coveredUntil) return false;
-      coveredUntil = end;
-      if (coveredUntil >= checkOut.getTime()) return true;
-    }
-    return false;
-  }
-
 }

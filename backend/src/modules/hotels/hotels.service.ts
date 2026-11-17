@@ -30,6 +30,13 @@ import { presentAuthor } from '../../common/users/deleted-user';
 import { runBookingTransaction } from '../../common/booking/booking-transaction';
 import { activeReservationClause } from '../hotel-bookings/room-reservation.util';
 import {
+  ActiveBooking,
+  activeBookingsFilter,
+  bookingsForRoom,
+  findFreeRooms,
+  isStayCoveredByRanges,
+} from './room-availability';
+import {
   HotelBooking,
   HotelBookingStatus,
 } from '../hotel-bookings/schemas/hotel-booking.schema';
@@ -317,6 +324,23 @@ export class HotelsService {
   };
 }
 
+/**
+ * Recomputes the stored averageRating / ratingCount of a hotel from its visible reviews (HTL-12 search uses the
+ * stored values). Called by whatever creates, edits, hides or deletes a review (the reviews task).
+ */
+async refreshRating(hotelId: string | Types.ObjectId) {
+  const [row] = await this.reviewModel
+    .aggregate([
+      { $match: { hotelId: new Types.ObjectId(String(hotelId)), isHidden: { $ne: true } } },
+      { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } },
+    ])
+    .exec();
+  const averageRating = row ? Number(row.average.toFixed(2)) : null;
+  const ratingCount = row?.count ?? 0;
+  await this.hotelModel.updateOne({ _id: new Types.ObjectId(String(hotelId)) }, { $set: { averageRating, ratingCount } }).exec();
+  return { averageRating, ratingCount };
+}
+
 async getDetails(
   hotelId: string,
   query: HotelDetailsQueryDto,
@@ -383,59 +407,16 @@ async getDetails(
     .sort({ name: 1, _id: 1 })
     .exec();
 
-  const now = new Date();
+  // The shared rule (room-availability.ts): the same one search, rooms/available and the booking hold use.
+  const activeBookings = rooms.length === 0
+    ? []
+    : await this.hotelBookingModel
+        .find(activeBookingsFilter(rooms.map((room) => room._id), startDate, endDate, new Date()))
+        .select({ rooms: 1, checkInDate: 1, checkOutDate: 1 })
+        .lean()
+        .exec();
 
-  const bookings =
-    rooms.length === 0
-      ? []
-      : await this.hotelBookingModel
-          .find({
-            'rooms.roomId': { $in: rooms.map((room) => room._id) },
-            checkInDate: { $lt: endDate },
-            checkOutDate: { $gt: startDate },
-            $or: [
-              { status: HotelBookingStatus.CONFIRMED },
-              {
-                status: HotelBookingStatus.PENDING_PAYMENT,
-                holdExpiresAt: { $gt: now },
-              },
-              {
-                status: HotelBookingStatus.PENDING_PAYMENT,
-                holdExpiresAt: null,
-              },
-            ],
-          })
-          .select({ rooms: 1 })
-          .lean()
-          .exec();
-
-  const bookedRoomIds = new Set(
-    bookings.flatMap((booking) =>
-      booking.rooms.map((bookingRoom) => bookingRoom.roomId.toString()),
-    ),
-  );
-
-  const availableRooms = rooms.filter((room) => {
-    const roomId = room._id.toString();
-
-    const overlapsBlockedRange = room.blockedRanges.some(
-      (range) =>
-        new Date(range.startDate).getTime() < endDate.getTime() &&
-        new Date(range.endDate).getTime() > startDate.getTime(),
-    );
-
-    const availableForWholeRange = this.isStayCoveredByRanges(
-      room.availabilityRanges,
-      startDate,
-      endDate,
-    );
-
-    return (
-      !bookedRoomIds.has(roomId) &&
-      !overlapsBlockedRange &&
-      availableForWholeRange
-    );
-  });
+  const availableRooms = findFreeRooms(rooms, activeBookings as ActiveBooking[], startDate, endDate);
 
   return {
     ...details,
@@ -505,7 +486,7 @@ async setRoomAvailability(
 
     const wouldRemoveReservedStay = activeBookings.some(
       (booking) =>
-        !this.isStayCoveredByRanges(
+        !isStayCoveredByRanges(
           newRanges,
           booking.checkInDate,
           booking.checkOutDate,
@@ -532,40 +513,6 @@ async setRoomAvailability(
 
     return updatedRoom;
   });
-}
-
-private isStayCoveredByRanges(
-  ranges: Array<{ startDate: Date; endDate: Date }>,
-  checkInDate: Date,
-  checkOutDate: Date,
-): boolean {
-  const sortedRanges = [...ranges].sort(
-    (a, b) => a.startDate.getTime() - b.startDate.getTime(),
-  );
-
-  let coveredUntil = checkInDate.getTime();
-  const requiredUntil = checkOutDate.getTime();
-
-  for (const range of sortedRanges) {
-    const start = range.startDate.getTime();
-    const end = range.endDate.getTime();
-
-    if (end <= coveredUntil) {
-      continue;
-    }
-
-    if (start > coveredUntil) {
-      return false;
-    }
-
-    coveredUntil = Math.max(coveredUntil, end);
-
-    if (coveredUntil >= requiredUntil) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 async blockRoomDates(
@@ -852,40 +799,19 @@ async getRoomStatuses(
     .sort({ name: 1, _id: 1 })
     .exec();
 
-  const roomIds = rooms.map((room) => room._id);
-  const now = new Date();
-
-  const bookings =
-    roomIds.length === 0
+  // Same rule as search and booking: Booked = an active reservation overlaps; Available = free; else Blocked.
+  const activeBookings: Array<ActiveBooking & { reference?: string; status?: string }> =
+    rooms.length === 0
       ? []
-      : await this.hotelBookingModel
-          .find({
-            'rooms.roomId': { $in: roomIds },
-            checkInDate: { $lt: endDate },
-            checkOutDate: { $gt: startDate },
-            $or: [
-              { status: HotelBookingStatus.CONFIRMED },
-              {
-                status: HotelBookingStatus.PENDING_PAYMENT,
-                holdExpiresAt: { $gt: now },
-              },
-              {
-                status: HotelBookingStatus.PENDING_PAYMENT,
-                holdExpiresAt: null,
-              },
-            ],
-          })
-          .select({ reference: 1, rooms: 1 })
+      : ((await this.hotelBookingModel
+          .find(activeBookingsFilter(rooms.map((room) => room._id), startDate, endDate, new Date()))
+          .select({ reference: 1, status: 1, rooms: 1, checkInDate: 1, checkOutDate: 1 })
           .lean()
-          .exec();
+          .exec()) as never);
+  const freeIds = new Set(findFreeRooms(rooms, activeBookings, startDate, endDate).map((room) => String(room._id)));
 
   return rooms.map((room) => {
-    const booking = bookings.find((candidate) =>
-      candidate.rooms.some(
-        (bookingRoom) =>
-          bookingRoom.roomId.toString() === room._id.toString(),
-      ),
-    );
+    const [booking] = bookingsForRoom(activeBookings, room._id);
 
     if (booking) {
       return {
@@ -893,35 +819,16 @@ async getRoomStatuses(
         roomName: room.name,
         status: 'Booked',
         reservationReference: booking.reference ?? null,
-      };
-    }
-
-    const overlapsBlockedRange = room.blockedRanges.some(
-      (range) =>
-        new Date(range.startDate).getTime() < endDate.getTime() &&
-        new Date(range.endDate).getTime() > startDate.getTime(),
-    );
-
-    const availableForWholeRange = this.isStayCoveredByRanges(
-      room.availabilityRanges,
-      startDate,
-      endDate,
-    );
-
-    if (!room.isActive || overlapsBlockedRange || !availableForWholeRange) {
-      return {
-        roomId: room._id,
-        roomName: room.name,
-        status: 'Blocked',
-        reservationReference: null,
+        reservationStatus: booking.status ?? null,
       };
     }
 
     return {
       roomId: room._id,
       roomName: room.name,
-      status: 'Available',
+      status: freeIds.has(String(room._id)) ? 'Available' : 'Blocked',
       reservationReference: null,
+      reservationStatus: null,
     };
   });
 }
