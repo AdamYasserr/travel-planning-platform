@@ -32,7 +32,7 @@ export class AuditLogsService {
     targetType?: string;
   }) {
     const page = Math.max(1, Math.floor(query.page ?? 1));
-    const limit = Math.min(100, Math.max(1, Math.floor(query.limit ?? 20)));
+    const limit = Math.min(100, Math.max(1, Math.floor(query.limit ?? 10)));
     const filter: Record<string, string> = {};
     if (query.action) filter.action = query.action;
     if (query.targetType) filter.targetType = query.targetType;

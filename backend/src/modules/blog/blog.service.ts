@@ -129,7 +129,7 @@ export class BlogService {
     return this.presentComment(comment);
   }
 
-  async listComments(postId: string, page = 1, limit = 20) {
+  async listComments(postId: string, page = 1, limit = 10) {
     const post = await this.findPost(postId);
     if (post.status !== PostStatus.PUBLISHED)
       throw new NotFoundException('Post not found');
@@ -217,7 +217,7 @@ export class BlogService {
     );
   }
 
-  async authorPage(authorId: string) {
+  async authorPage(authorId: string, paging: { page?: number; limit?: number } = {}) {
     const objectId = this.objectId(authorId);
     const user = await this.users
       .findOne({
@@ -229,7 +229,7 @@ export class BlogService {
       .select('_id name')
       .exec();
     if (!user) throw new NotFoundException('Author not found');
-    const query = { page: 1, limit: 20, sort: 'newest' } as PostListQueryDto;
+    const query = { page: paging.page ?? 1, limit: paging.limit ?? 10, sort: 'newest' } as PostListQueryDto;
     const posts = await this.paginatePosts(
       { authorId: objectId, status: PostStatus.PUBLISHED },
       query,
@@ -358,7 +358,7 @@ export class BlogService {
     viewerId?: string,
   ) {
     const page = Math.max(1, Number(query.page) || 1);
-    const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 10));
     const direction = query.sort === 'oldest' ? 1 : -1;
     const [rows, total] = await Promise.all([
       this.posts

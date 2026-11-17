@@ -196,7 +196,7 @@ export class HotelBookingsService {
     return booking;
   }
 
-  async listForUser(userId: string, page = 1, limit = 20) {
+  async listForUser(userId: string, page = 1, limit = 10) {
     const skip = (page - 1) * limit;
     const filter = { userId: new Types.ObjectId(userId) };
     const [items, totalItems] = await Promise.all([

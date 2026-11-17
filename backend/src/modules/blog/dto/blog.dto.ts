@@ -104,13 +104,13 @@ export class PostListQueryDto {
   @Min(1)
   page = 1;
 
-  @ApiPropertyOptional({ example: 20, minimum: 1, maximum: 50, default: 20 })
+  @ApiPropertyOptional({ example: 10, minimum: 1, maximum: 100, default: 10 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(50)
-  limit = 20;
+  @Max(100)
+  limit = 10; // GEN-05
 
   @ApiPropertyOptional({ enum: ['newest', 'oldest'], default: 'newest' })
   @IsOptional()

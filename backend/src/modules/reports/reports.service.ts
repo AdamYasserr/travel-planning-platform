@@ -78,7 +78,7 @@ export class ReportsService {
     };
   }
 
-  async listReports(status?: ReportStatus, page = 1, limit = 20) {
+  async listReports(status?: ReportStatus, page = 1, limit = 10) {
     const safePage = Math.max(1, Math.floor(page));
     const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
     const filter = status ? { status } : {};

@@ -140,7 +140,7 @@ export class FlightBookingsService {
     }
   }
 
-  async listForUser(userId: string, page = 1, limit = 20) {
+  async listForUser(userId: string, page = 1, limit = 10) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
     }

@@ -301,9 +301,11 @@ describe('flight search and flight details (FLT-11, 12, 15, 17, 30, GEN-06)', ()
 
     it('a flight whose departure time has passed is hidden even before the status job has marked it Departed', async () => {
       const { flightId, q } = await scene();
-      const past = new Date(Date.now() - 3600_000);
+      // One minute ago, and the search date is that instant's date in Cairo (the departure airport's zone),
+      // so the test does not fail when the UTC day and the Cairo day differ (around midnight).
+      const past = new Date(Date.now() - 60_000);
       await ctx.conn.model('Flight').updateOne({ _id: flightId }, { $set: { departureTime: past, arrivalTime: new Date(past.getTime() + 7200_000) } });
-      const localDay = past.toISOString().slice(0, 10);
+      const localDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(past);
       expect(ids(await search({ ...q, departureDate: localDay }))).toEqual([]);
     });
 

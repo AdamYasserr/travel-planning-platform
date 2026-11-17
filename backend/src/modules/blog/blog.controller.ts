@@ -19,10 +19,10 @@ import {
   ApiConsumes,
   ApiCookieAuth,
   ApiOperation,
-  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request } from 'express';
+import { PageQueryDto } from '../../common/pagination/pagination';
 import { Public } from '../../common/decorators/public.decorator';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
 import { MediaService } from '../media/media.service';
@@ -111,27 +111,9 @@ export class BlogController {
 
   @Public()
   @Get(':id/comments')
-  @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, example: 20 })
-  listComments(
-    @Param('id') id: string,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-  ) {
-    const parsedPage = Number(page);
-    const parsedLimit = Number(limit);
-    if (
-      !Number.isInteger(parsedPage) ||
-      parsedPage < 1 ||
-      !Number.isInteger(parsedLimit) ||
-      parsedLimit < 1 ||
-      parsedLimit > 50
-    ) {
-      throw new BadRequestException(
-        'page must be positive and limit must be between 1 and 50',
-      );
-    }
-    return this.blog.listComments(id, parsedPage, parsedLimit);
+  listComments(@Param('id') id: string, @Query() query: PageQueryDto) {
+    // GEN-05: 10 per page by default, limit up to 100; a bad page or limit is a 400 on that field.
+    return this.blog.listComments(id, query.page, query.limit);
   }
 
   @Post(':id/like')
@@ -242,7 +224,7 @@ export class BlogAuthorsController {
 
   @Public()
   @Get(':id')
-  author(@Param('id') id: string) {
-    return this.blog.authorPage(id);
+  author(@Param('id') id: string, @Query() query: PageQueryDto) {
+    return this.blog.authorPage(id, query);
   }
 }

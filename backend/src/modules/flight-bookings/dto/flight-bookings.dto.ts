@@ -65,5 +65,5 @@ export class FlightBookingListQueryDto {
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 20;
+  limit = 10; // GEN-05
 }
