@@ -9,6 +9,7 @@ import { Room, RoomSchema } from './schemas/room.schema';
 import { HotelBookingsModule } from '../hotel-bookings/hotel-bookings.module';
 import { Review, ReviewSchema } from './schemas/review.schema';
 import { ReferenceDataModule } from '../reference-data/reference-data.module';
+import { HotelReservationsService } from './hotel-reservations.service';
 import { HotelSearchService } from './hotel-search.service';
 import { City, CitySchema } from '../reference-data/schemas/city.schema';
 import { Country, CountrySchema } from '../reference-data/schemas/country.schema';
@@ -27,7 +28,7 @@ import { Country, CountrySchema } from '../reference-data/schemas/country.schema
     ReferenceDataModule,
   ],
   controllers: [HotelsController],
-  providers: [HotelsService, HotelSearchService],
+  providers: [HotelsService, HotelSearchService, HotelReservationsService],
   exports: [MongooseModule, HotelsService, HotelSearchService],
 })
 export class HotelsModule {}

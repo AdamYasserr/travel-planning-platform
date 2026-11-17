@@ -244,4 +244,78 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       expect((await f.moderator.agent.get(`/api/flights/507f1f77bcf86cd799439011/${path}`)).status).toBe(404);
     });
   });
+  describe('hotel reservations (HTL-22)', () => {
+    async function hotelWithStays() {
+      const h = await createHotelWithRooms(ctx, { rooms: 3 });
+      const [alice, bob, carol] = [await createUser(ctx, 'user', { name: 'Alice Guest' }), await createUser(ctx), await createUser(ctx)];
+      const a = await holdHotel(alice, { hotelId: h.hotelId, roomIds: [h.roomIds[0]], checkIn: day(10), checkOut: day(13) });
+      await confirmBooking(ctx, alice, 'hotel', a.body._id);
+      const b = await holdHotel(bob, { hotelId: h.hotelId, roomIds: [h.roomIds[1]], checkIn: day(20), checkOut: day(23) });
+      const c = await holdHotel(carol, { hotelId: h.hotelId, roomIds: [h.roomIds[2]], checkIn: day(40), checkOut: day(41) });
+      await model('HotelBooking').updateOne({ _id: c.body._id }, { $set: { status: 'Expired' } });
+      // A booking at another hotel must never show up here.
+      const elsewhere = await createHotelWithRooms(ctx, { rooms: 1 });
+      expect((await holdHotel(await createUser(ctx), { hotelId: elsewhere.hotelId, roomIds: elsewhere.roomIds })).status).toBe(201);
+      return { ...h, alice, bob, carol, a, b, c };
+    }
+    const list = (agent: any, hotelId: string, q = '') => agent.get(`/api/hotels/${hotelId}/reservations${q}`);
+
+    it('lists the hotel\'s reservations newest first with guest, rooms, dates, status, total and reference', async () => {
+      const h = await hotelWithStays();
+      const res = await list(h.moderator.agent, h.hotelId);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ page: 1, limit: 10, total: 3, pages: 1 });
+      expect(res.body.items.map((i: any) => i.bookingId)).toEqual([h.c.body._id, h.b.body._id, h.a.body._id]);
+      expect(res.body.items[2]).toMatchObject({
+        reference: h.a.body.reference,
+        guest: { name: 'Alice Guest' },
+        rooms: [{ roomId: h.roomIds[0], roomName: expect.any(String) }],
+        checkInDate: `${day(10)}T00:00:00.000Z`,
+        checkOutDate: `${day(13)}T00:00:00.000Z`,
+        status: 'Confirmed',
+        totalPrice: 4500,
+        currency: 'EGP',
+      });
+    });
+
+    it('filters by status and by stays overlapping from/to (both days included)', async () => {
+      const h = await hotelWithStays();
+      const ids = async (q: string) => (await list(h.moderator.agent, h.hotelId, q)).body.items.map((i: any) => i.bookingId);
+      expect(await ids('?status=Confirmed')).toEqual([h.a.body._id]);
+      expect(await ids(`?from=${day(12)}&to=${day(12)}`)).toEqual([h.a.body._id]);
+      expect(await ids(`?from=${day(13)}&to=${day(19)}`)).toEqual([h.a.body._id]);
+      expect(await ids(`?from=${day(14)}&to=${day(20)}`)).toEqual([h.b.body._id]);
+      expect(await ids(`?from=${day(21)}`)).toEqual([h.c.body._id, h.b.body._id]);
+      expect(await ids(`?to=${day(9)}`)).toEqual([]);
+    });
+
+    it('rejects bad filters with 400 on the field', async () => {
+      const h = await createHotelWithRooms(ctx, { rooms: 1 });
+      const field = async (q: string) => (await list(h.moderator.agent, h.hotelId, q)).body.errors?.[0]?.field;
+      expect(await field(`?from=${day(5)}&to=${day(4)}`)).toBe('to');
+      expect(await field('?from=2026-13-01')).toBe('from');
+      expect(await field('?status=Paid')).toBe('status');
+      expect(await field('?limit=101')).toBe('limit');
+    });
+
+    it('shows "Deleted user" for a deactivated guest', async () => {
+      const h = await hotelWithStays();
+      await model('User').updateOne({ _id: h.alice.id }, { $set: { isActive: false, deactivatedAt: new Date() } });
+      const res = await list(h.moderator.agent, h.hotelId, '?status=Confirmed');
+      expect(res.body.items[0].guest).toEqual({ name: 'Deleted user' });
+    });
+
+    it('only that hotel\'s moderator or an admin: others 403, signed out 401, unknown hotel 404, bad id 400', async () => {
+      const h = await createHotelWithRooms(ctx, { rooms: 1 });
+      const other = await createHotelWithRooms(ctx, { rooms: 1 });
+      const { moderator: airlineModerator } = await createAirlineWithFlight(ctx, { seats: 1 });
+      expect((await list(other.moderator.agent, h.hotelId)).status).toBe(403);
+      expect((await list(airlineModerator.agent, h.hotelId)).status).toBe(403);
+      expect((await list((await createUser(ctx)).agent, h.hotelId)).status).toBe(403);
+      expect((await ctx.http().get(`/api/hotels/${h.hotelId}/reservations`)).status).toBe(401);
+      expect((await list((await createUser(ctx, 'admin')).agent, h.hotelId)).status).toBe(200);
+      expect((await list(h.moderator.agent, '507f1f77bcf86cd799439011')).status).toBe(404);
+      expect((await list(h.moderator.agent, 'nope')).status).toBe(400);
+    });
+  });
 });

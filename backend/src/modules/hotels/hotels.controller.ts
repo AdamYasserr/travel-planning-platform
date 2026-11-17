@@ -34,6 +34,8 @@ import {
 } from './dto/hotels.dto';
 import { HotelsService } from './hotels.service';
 import { HotelSearchService } from './hotel-search.service';
+import { HotelReservationsService } from './hotel-reservations.service';
+import { HotelReservationsQueryDto } from './dto/hotel-reservations.dto';
 import { HotelSearchQueryDto, RoomsAvailableQueryDto } from './dto/hotel-search.dto';
 
 type AuthenticatedRequest = Request & {
@@ -49,6 +51,7 @@ export class HotelsController {
   constructor(
     private readonly hotelsService: HotelsService,
     private readonly hotelSearch: HotelSearchService,
+    private readonly reservations: HotelReservationsService,
   ) {}
 
   // HTL-11/12: public search. Declared BEFORE ':hotelId' so "search" is not read as a hotel id.
@@ -264,6 +267,23 @@ deleteRoom(
     roomId,
     request.user.userId,
   );
+}
+
+// HTL-22: the hotel's reservations (its moderator or an admin).
+@Get(':hotelId/reservations')
+@Roles(UserRole.ADMIN, UserRole.MODERATOR)
+@ApiCookieAuth('access_token')
+@ApiOperation({
+  summary: 'Reservations of a hotel (its moderator or an admin)',
+  description:
+    'HTL-22. Guest name ("Deleted user" for a deactivated account), rooms, check-in/out, status, total and reference; newest first, 10 per page. Filters: status, and from/to (YYYY-MM-DD) keeping stays that overlap that range. Another hotel\'s moderator or a user gets 403.',
+})
+listReservations(
+  @Param('hotelId') hotelId: string,
+  @Query() query: HotelReservationsQueryDto,
+  @Req() request: AuthenticatedRequest,
+) {
+  return this.reservations.list(request.user, hotelId, query);
 }
 
 // HTL-08 (main route): moderator view of each room's status for a date range.

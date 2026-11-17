@@ -209,3 +209,6 @@ HotelBookingSchema.index({
   checkInDate: 1,
   checkOutDate: 1,
 });
+
+// HTL-22: a hotel's reservation list, newest first.
+HotelBookingSchema.index({ hotelId: 1, status: 1, createdAt: -1 });
