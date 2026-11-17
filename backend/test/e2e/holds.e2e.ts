@@ -1,6 +1,6 @@
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { startApp, type E2EContext } from './helpers/app';
-import { confirmBooking, holdFlight, holdHotel, startPayment } from './helpers/bookings';
+import { confirmBooking, holdFlight, holdHotel, intentIdOf, startPayment } from './helpers/bookings';
 import { createAirlineWithFlight, createHotelWithRooms, createUser, day } from './helpers/factories';
 import { seedReference } from './helpers/reference';
 
@@ -85,10 +85,12 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       expect((await holdHotel(user, { hotelId, roomIds, ...dates })).status).toBe(400);
     });
 
-    it('policies must be accepted (400)', async () => {
+    it('policies may be accepted later: a hold without acceptance is created unaccepted (PAY-02)', async () => {
       const { hotelId, roomIds } = await createHotelWithRooms(ctx, { rooms: 1 });
       const user = await createUser(ctx);
-      expect((await holdHotel(user, { hotelId, roomIds, body: { policiesAccepted: false } })).status).toBe(400);
+      const res = await holdHotel(user, { hotelId, roomIds, body: { policiesAccepted: false } });
+      expect(res.status).toBe(201);
+      expect(res.body.policiesAcceptedAt ?? null).toBeNull();
     });
 
     it('dates outside the room availability range give 409', async () => {
@@ -109,7 +111,7 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       expect((await holdHotel(b, { hotelId, roomIds })).status).toBe(201);
     });
 
-    it('cancelling an unpaid hold with an open payment also closes the payment session', async () => {
+    it('cancelling an unpaid hold with an open payment also cancels its PaymentIntent', async () => {
       const { hotelId, roomIds } = await createHotelWithRooms(ctx, { rooms: 1 });
       const user = await createUser(ctx);
       const hold = await holdHotel(user, { hotelId, roomIds });
@@ -119,7 +121,7 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       const cancel = await user.agent.post(`/api/hotel-bookings/${hold.body._id}/cancel`);
       expect(cancel.status).toBe(200);
       expect(cancel.body.booking.status).toBe('Expired');
-      expect(ctx.stripe.expiredSessions).toContain(pay.body.checkoutSessionId);
+      expect(ctx.stripe.cancelledIntents).toContain(intentIdOf(ctx, pay.body));
     });
 
     it('a lapsed hold stops blocking, and the expiry job marks it Expired', async () => {

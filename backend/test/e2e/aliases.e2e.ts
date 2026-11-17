@@ -286,7 +286,7 @@ describe('PDF route aliases return the same as the original routes (Section 8)',
       const { hotelId, roomIds } = await createHotelWithRooms(ctx, { rooms: 1 });
       const user = await createUser(ctx);
       const hold = await holdHotel(user, { hotelId, roomIds });
-      const res = await ctx.http().post(path).set('stripe-signature', 'forged').set('content-type', 'application/json').send(JSON.stringify({ id: 'evt_1', type: 'checkout.session.completed', data: { object: {} } }));
+      const res = await ctx.http().post(path).set('stripe-signature', 'forged').set('content-type', 'application/json').send(JSON.stringify({ id: 'evt_1', type: 'payment_intent.succeeded', data: { object: {} } }));
       expect(res.status).toBe(400);
       expect((await user.agent.get(`/api/hotel-bookings/${hold.body._id}`)).body.status).toBe('Pending Payment');
     });

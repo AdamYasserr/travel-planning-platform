@@ -28,30 +28,37 @@ export function holdFlight(user: TestUser, input: { flightId: string; passengers
   });
 }
 
-/**
- * Turns a Pending Payment hold into a Confirmed booking through the REAL payment path:
- * the user opens a payment, then the (signature-checked) Stripe webhook reports success.
- * ALL Stripe specifics live here and in StripeFake, so tests never mention Stripe events.
- * Returns the payment id (also the refund id, see GET /refunds/:id).
- */
-export async function confirmBooking(ctx: E2EContext, user: TestUser, type: BookingType, bookingId: string): Promise<string> {
-  const pay = await user.agent.post('/api/payments/checkout-session').send({ bookingType: type, bookingId });
-  if (pay.status >= 300) throw new Error(`could not start payment: ${pay.status} ${JSON.stringify(pay.body)}`);
-  const event = ctx.stripe.successEvent({
-    paymentId: String(pay.body.paymentId),
-    checkoutSessionId: pay.body.checkoutSessionId,
-    bookingType: type,
-    bookingId,
-    userId: user.id,
-    amountMinor: pay.body.amountMinor,
-    currency: pay.body.currency,
-  });
-  const hook = await ctx.http().post('/api/payments/webhook').set('stripe-signature', StripeFake.VALID_SIGNATURE).set('content-type', 'application/json').send(JSON.stringify(event));
-  if (hook.status !== 201) throw new Error(`webhook failed: ${hook.status} ${JSON.stringify(hook.body)}`);
-  return String(pay.body.paymentId);
+/** Delivers a (fake) Stripe event to the REAL webhook route with a valid signature. */
+export function sendWebhook(ctx: E2EContext, event: unknown, signature: string = StripeFake.VALID_SIGNATURE) {
+  return ctx.http().post('/api/payments/webhook').set('stripe-signature', signature).set('content-type', 'application/json').send(JSON.stringify(event));
 }
 
-/** Starts a payment only (booking stays Pending Payment). */
+export function acceptPolicies(user: TestUser, type: BookingType, bookingId: string) {
+  return user.agent.post(`/api/bookings/${type}/${bookingId}/accept-policies`).send({ accepted: true });
+}
+
+/** Starts a payment only (booking stays Pending Payment): POST /api/payments. */
 export async function startPayment(user: TestUser, type: BookingType, bookingId: string) {
-  return user.agent.post('/api/payments/checkout-session').send({ bookingType: type, bookingId });
+  return user.agent.post('/api/payments').send({ bookingType: type, bookingId });
+}
+
+/** The PaymentIntent id behind a POST /api/payments (or retry) response. */
+export function intentIdOf(ctx: E2EContext, paymentBody: { clientSecret: string }): string {
+  return ctx.stripe.intentIdFromSecret(paymentBody.clientSecret);
+}
+
+/**
+ * Turns a Pending Payment hold into a Confirmed booking through the REAL payment path:
+ * the user accepts the policies, opens a payment (PaymentIntent), then the (signature-checked) Stripe
+ * webhook reports success. ALL Stripe specifics live here and in StripeFake, so tests never mention
+ * Stripe events. Returns the payment id (also the refund id, see GET /refunds/:id).
+ */
+export async function confirmBooking(ctx: E2EContext, user: TestUser, type: BookingType, bookingId: string): Promise<string> {
+  const accepted = await acceptPolicies(user, type, bookingId);
+  if (accepted.status >= 300) throw new Error(`could not accept policies: ${accepted.status} ${JSON.stringify(accepted.body)}`);
+  const pay = await startPayment(user, type, bookingId);
+  if (pay.status >= 300) throw new Error(`could not start payment: ${pay.status} ${JSON.stringify(pay.body)}`);
+  const hook = await sendWebhook(ctx, ctx.stripe.succeededEvent(intentIdOf(ctx, pay.body)));
+  if (hook.status !== 201) throw new Error(`webhook failed: ${hook.status} ${JSON.stringify(hook.body)}`);
+  return String(pay.body.paymentId);
 }

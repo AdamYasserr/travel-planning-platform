@@ -31,6 +31,8 @@ export interface E2EContext {
 export interface StartOptions {
   cookieSecure?: boolean;
   swagger?: boolean;
+  /** NODE_ENV of the app under test (default 'test'). */
+  nodeEnv?: 'test' | 'production';
 }
 
 /**
@@ -43,14 +45,17 @@ export async function startApp(options: StartOptions = {}): Promise<E2EContext> 
   const replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   const uri = replSet.getUri('e2e');
   Object.assign(process.env, {
-    NODE_ENV: 'test',
+    NODE_ENV: options.nodeEnv ?? 'test',
     MONGODB_URI: uri,
     JWT_SECRET: 'e2e-jwt-secret-'.padEnd(40, 'x'),
     REFRESH_TOKEN_SECRET: 'e2e-refresh-secret-'.padEnd(40, 'y'),
     COOKIE_SECURE: String(options.cookieSecure ?? false),
     BOOKING_HOLD_MINUTES: '10',
-    STRIPE_SECRET_KEY: '',
-    STRIPE_WEBHOOK_SECRET: '',
+    // Stripe itself is replaced by StripeFake; these only make the app believe it runs against Stripe TEST mode.
+    STRIPE_SECRET_KEY: 'sk_test_e2e_fake',
+    STRIPE_WEBHOOK_SECRET: 'whsec_e2e_fake',
+    // PAY-04: the e2e fixtures price rooms and cabins in EGP.
+    PLATFORM_CURRENCY: 'EGP',
     FXRATES_API_KEY: '',
   });
 
