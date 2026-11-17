@@ -84,11 +84,14 @@ describe('MediaService GEN-08 validation', () => {
 
     const userModel = {
       findOne: jest.fn(() => ({
-        select: jest.fn(async () => ({ _id: ownerId })),
+        select: jest.fn(() => ({
+          exec: jest.fn().mockResolvedValue({ _id: ownerId }),
+        })),
       })),
     };
 
     const mediaModel = { create };
+    const itineraryModel = { findOne: jest.fn() };
     const storage = {
       save,
       read: jest.fn(),
@@ -98,6 +101,7 @@ describe('MediaService GEN-08 validation', () => {
     service = new MediaService(
       mediaModel as never,
       userModel as never,
+      itineraryModel as never,
       storage as never,
     );
   });

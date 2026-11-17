@@ -29,6 +29,9 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
+import { AirportsModule } from './modules/airports/airports.module';
+import { BlogModule } from './modules/blog/blog.module';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -51,6 +54,7 @@ import { AppService } from './app.service';
     AirlinesModule,
     FlightsModule,
     AirportsModule,
+    BlogModule,
 
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([

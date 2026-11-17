@@ -59,3 +59,23 @@ Database integration, API behavior, authorization, and booking-related workflows
 ## Pending Integration
 
 Flight cancellation remains dependent on the flight-booking, payment/refund, and notification components being implemented and integrated.
+================================================
+Student: Ahmed
+Tool: Claude
+Related Requirements: FLT-11, FLT-12, FLT-15, FLT-17
+
+Prompts used:
+1. "Guide me step by step through Phase 3 flight search. Use the reviewed requirements and current project structure. Explain each DTO, controller route, service method, and which requirement it covers, and list the files you will change before editing."
+
+2. "Help me implement FLT-11, FLT-12, FLT-15, and GEN-05. Check the requirement wording, use the existing flight, cabin, airline, and airport schemas, and explain the passenger types, seat checks, and filtering rules."
+
+3. "Check GEN-06 in the workbook. Help me convert the local departure date to a UTC range using the departure airport's IANA time zone, handle daylight saving time, and reuse the shared flight-time formatter so local times include the UTC offset."
+
+4. "Help me implement FLT-17. Return the flight duration, every cabin with baggage details, and the airline baggage and cancellation policies without changing other teammates' schemas."
+
+How the output was used:
+1. Used the explanations and plan to create the flight search DTO, controller route, and search service, and to register the policy schemas in FlightsModule. Reviewed the changes and confirmed that `npm run build` succeeds.
+2. Used the guidance and code to implement search by route and date, round trip, passenger pricing, cabin class and price filters, sorting, and pagination. Reviewed the changes and confirmed that `npm run build` succeeds.
+3. Used the code to add the local-date-to-UTC conversion and update the shared formatter to include the UTC offset. Checked the result around midnight and daylight saving changes.
+4. Used the code to implement flight details with cabins and policies. Reviewed the changes and confirmed that only the flights module was modified.
+================================================
