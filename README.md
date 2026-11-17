@@ -196,6 +196,19 @@ Every bad value is a 400 with the error on the right field (`{ "errors": [{ "fie
 
 The public reference and airport lists (`/airports`, `/countries`, `/cities`, `/attractions`) default to 10 per page; a malformed `page`, `limit`, `countryCode`, `cityId` or `parentId` is 400, while a well-formed unknown value gives an empty list.
 
+### Hotel search and room availability (`GET /api/hotels/search`, `GET /api/hotels/:id/rooms/available`)
+
+Both are public. **One rule decides whether a room is free**, in `backend/src/modules/hotels/room-availability.ts`, and hotel search, `rooms/available`, the moderator room statuses (`GET /hotels/:id/availability`), hotel details and the booking hold all call it, so search and booking cannot disagree. A room is free for a stay when it is active, every night of the stay is covered by its availability ranges, no blocked range overlaps, and no Confirmed reservation or *unexpired* Pending Payment hold overlaps (an expired hold frees the room at once, even before the expiry job runs).
+
+* **Ranges that touch count as one.** 1-5 and 5-10 cover a stay of 3-8; a real gap (even one night) breaks coverage. Range end dates are exclusive.
+* **Search parameters:** exactly one of `city` (a `city_id`) or `country` (a code); `checkIn`, `checkOut` (strict `YYYY-MM-DD`, check-out after check-in, check-in not in the past); `guests` (required, at least 1); `rooms` (default 1); `minPrice`, `maxPrice`; `minRating` (1-5); `sortBy` (`price` or `rating`) and `order`; `page`, `limit` (10 by default, max 100). Every bad value is a 400 on the right field; a well-formed but unknown city or country is an empty 200 with "No hotels found".
+* A hotel matches when it is active and has at least `rooms` free rooms whose best `rooms` capacities together hold the guests. The price filter and price sort use the price per night of the **cheapest free room**; the rating filter and sort use the stored `averageRating` (unrated hotels are excluded when `minRating` is set, and sort last).
+* **"Check-in cannot be in the past" uses the UTC date**, because hotels have no stored time zone.
+* **Ratings** are stored on the hotel (`averageRating`, `ratingCount`, null / 0 = unrated) and are refreshed by `HotelsService.refreshRating(hotelId)`. Nothing calls it yet: real hotels stay unrated until the reviews task creates reviews and calls it.
+* **Why search runs in memory, on purpose.** It makes three batched queries (the hotels of the city or country, all their rooms, and the relevant reservations and holds), applies the shared rule in code, and only then filters, sorts and pages, so pages and totals are exact and there is no N+1. A single database aggregation would need the free-room rule written a second time as a database expression, which could drift from the one booking uses; consistency with booking is worth more than pushing the work into the database. It scales with the hotels of one city or country, not the whole catalogue. The search method (`HotelSearchService.search`) takes a criteria object with lists of cities and countries so the itinerary hotel search (ITN-25) can reuse it.
+* **Deleting a room** is rejected if *any* booking record references it, including Expired and Cancelled ones, because booking history keeps pointing at the room (deactivate it instead). Deactivating, blocking or removing availability is rejected while a Confirmed reservation or unexpired hold overlaps.
+* **Indexes:** `Hotel { isActive, cityId, averageRating }`, `Hotel { isActive, countryId, averageRating }`, `Room { hotelId, isActive }`; reservations use the existing `HotelBooking { rooms.roomId, status, checkInDate, checkOutDate }`.
+
 ## 8. Testing
 
 Run unit tests:
@@ -237,7 +250,7 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 
 **Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: open a payment, then post a fake-signed webhook event to `POST /api/payments/webhook`. All Stripe event details live in that helper and in `StripeFake`; if payments move to PaymentIntents, change those two places, not the tests.
 
-**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`); shared helpers in `test/e2e/helpers/`:
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`); shared helpers in `test/e2e/helpers/`:
 
 | Helper | Purpose |
 | --- | --- |
