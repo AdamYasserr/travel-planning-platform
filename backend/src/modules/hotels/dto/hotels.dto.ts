@@ -257,16 +257,14 @@ export class CreateRoomDto {
   @IsPositive()
   pricePerNight: number;
 
-  @ApiProperty({
-    description: 'ISO 4217 currency code used for this room rate',
-    example: 'EGP',
+  @ApiPropertyOptional({
+    description:
+      'Omit to use the platform currency (PLATFORM_CURRENCY). Any other value is rejected with 400 "currency must be <platform currency>".',
+    example: 'USD',
   })
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toUpperCase() : value,
-  )
+  @IsOptional()
   @IsString()
-  @Matches(/^[A-Z]{3}$/)
-  currency: string;
+  currency?: string;
 
   @ApiPropertyOptional({
     type: [RoomDateRangeDto],

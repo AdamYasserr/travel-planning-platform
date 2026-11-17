@@ -26,6 +26,32 @@ export class FlightBookingPassenger {
 export const FlightBookingPassengerSchema =
   SchemaFactory.createForClass(FlightBookingPassenger);
 
+@Schema({ _id: false })
+export class BaggageSnapshot {
+  @Prop({ type: Number, required: true, min: 0 })
+  carryOnAllowanceKg: number;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  checkedBaggageAllowanceKg: number;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  pricePerExtraBag: number;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  maxExtraBagsPerPassenger: number;
+
+  @Prop({ type: String, required: true })
+  currency: string;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  freeBagsCount: number;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  maxWeightPerBagKg: number;
+}
+
+export const BaggageSnapshotSchema = SchemaFactory.createForClass(BaggageSnapshot);
+
 @Schema({ timestamps: true })
 export class FlightBooking {
   declare createdAt: Date;
@@ -99,8 +125,13 @@ export class FlightBooking {
   @Prop({ type: String, trim: true, default: undefined })
   reference?: string;
 
-  @Prop({ type: Date, required: true })
-  policiesAcceptedAt: Date;
+  // PAY-02: set when the user accepts the policies (at booking time or via accept-policies).
+  @Prop({ type: Date, default: null })
+  policiesAcceptedAt?: Date | null;
+
+  // PAY-02: baggage terms shown to (and accepted by) the user, snapshotted like the cancellation tiers.
+  @Prop({ type: BaggageSnapshotSchema, default: null })
+  baggagePolicy?: BaggageSnapshot | null;
 
   @Prop({ type: [CancellationTierSchema], default: [] })
   cancellationTiers: CancellationTier[];

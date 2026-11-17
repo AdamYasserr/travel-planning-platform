@@ -26,8 +26,10 @@ export default () => ({
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
-    checkoutSuccessUrl: process.env.STRIPE_CHECKOUT_SUCCESS_URL,
-    checkoutCancelUrl: process.env.STRIPE_CHECKOUT_CANCEL_URL,
+  },
+  platform: {
+    // PAY-04: single currency for all prices and payments.
+    currency: (process.env.PLATFORM_CURRENCY || 'USD').trim().toUpperCase(),
   },
   fxRates: {
     apiKey: process.env.FXRATES_API_KEY,

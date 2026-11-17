@@ -17,6 +17,8 @@ describe('FlightBookingsService', () => {
   let inventoryReserve: ReturnType<typeof jest.fn>;
   let inventoryUpdate: ReturnType<typeof jest.fn>;
 
+  const baggage = { carryOnAllowanceKg: 7, checkedBaggageAllowanceKg: 23, pricePerExtraBag: 30, maxExtraBagsPerPassenger: 2, currency: 'EUR' };
+
   const dto = (): CreateFlightBookingDto => ({
     flightId: flightId.toString(),
     cabinClass: CabinClass.ECONOMY,
@@ -59,6 +61,7 @@ describe('FlightBookingsService', () => {
         updateOne: inventoryUpdate,
       } as never,
       { findOne: () => ({ lean: () => ({ exec: async () => ({ tiers: [] }) }) }) } as never,
+      { findOne: () => ({ lean: () => ({ exec: async () => baggage }) }) } as never,
       { expireFlightHoldsForInventory: async () => undefined } as never,
     );
   });
@@ -91,11 +94,19 @@ describe('FlightBookingsService', () => {
     expect(ms).toBeLessThan(10 * 60 * 1000 + 5_000);
   });
 
-  it('rejects unaccepted policies before reserving seats', async () => {
-    await expect(
-      service.create(userId, { ...dto(), policiesAccepted: false }),
-    ).rejects.toThrow('You must accept the flight booking policies');
-    expect(inventoryReserve).not.toHaveBeenCalled();
+  it('accepted policies are timestamped at booking time and the baggage terms are snapshotted', async () => {
+    await service.create(userId, dto());
+    expect(bookingCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policiesAcceptedAt: expect.any(Date),
+        baggagePolicy: expect.objectContaining({ carryOnAllowanceKg: 7, pricePerExtraBag: 30 }),
+      }),
+    );
+  });
+
+  it('allows booking without accepting the policies (accept later, PAY-02)', async () => {
+    await service.create(userId, { ...dto(), policiesAccepted: false });
+    expect(bookingCreate).toHaveBeenCalledWith(expect.objectContaining({ policiesAcceptedAt: null }));
   });
 
   it('does not oversell when the atomic seat reservation fails', async () => {
@@ -113,6 +124,7 @@ describe('FlightBookingsService', () => {
         updateOne: inventoryUpdate,
       } as never,
       { findOne: () => ({ lean: () => ({ exec: async () => ({ tiers: [] }) }) }) } as never,
+      { findOne: () => ({ lean: () => ({ exec: async () => baggage }) }) } as never,
       { expireFlightHoldsForInventory: async () => undefined } as never,
     );
 

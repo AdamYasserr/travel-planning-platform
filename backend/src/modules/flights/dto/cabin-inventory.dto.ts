@@ -4,11 +4,11 @@ import {
   IsInt,
   IsNumber,
   IsString,
-  IsNotEmpty,
   IsOptional,
   Min,
-  Length,
 } from 'class-validator';
+
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 import { CabinClass } from '../schemas/cabin-inventory.schema';
 
@@ -24,10 +24,10 @@ export class CreateCabinInventoryDto {
   @Min(0.01)
   price: number;
 
+  @ApiPropertyOptional({ description: 'Omit to use the platform currency (PLATFORM_CURRENCY). Any other value is rejected.', example: 'USD' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  @Length(3, 3)
-  currency: string;
+  currency?: string;
 
   // FLT-04: Included free bags
   @IsInt()
@@ -51,10 +51,9 @@ export class UpdateCabinInventoryDto {
   @Min(0.01)
   price?: number;
 
+  @ApiPropertyOptional({ description: 'Must equal the platform currency (PLATFORM_CURRENCY).', example: 'USD' })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  @Length(3, 3)
   currency?: string;
 
   @IsOptional()

@@ -11,7 +11,7 @@ describe('HotelsService reference validation (GEN-12)', () => {
   const countries = { find: jest.fn() };
   const cities = { find: jest.fn(), findOne: jest.fn() };
   const airports = { find: jest.fn() };
-  const currencies = { assertSupported: jest.fn(async (c: string) => c.toUpperCase()) };
+  const currencies = { resolve: jest.fn((c?: string) => (c ?? 'EGP').toUpperCase()) };
 
   beforeEach(() => {
     jest.clearAllMocks();

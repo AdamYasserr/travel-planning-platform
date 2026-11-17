@@ -145,11 +145,10 @@ describe('HotelBookingsService', () => {
     expect(bookingCreate).not.toHaveBeenCalled();
   });
 
-  it('requires explicit policy acceptance', async () => {
-    await expect(
-      service.create(userId, { ...dto(), policiesAccepted: false }),
-    ).rejects.toThrow('You must accept the hotel booking policies');
-    expect(hotelFindOne).not.toHaveBeenCalled();
+  it('allows booking without accepting the policies (accept later, PAY-02)', async () => {
+    await service.create(userId, { ...dto(), policiesAccepted: false });
+    const [[created]] = bookingCreate.mock.calls as unknown as [[Record<string, unknown>[]]];
+    expect(created[0]).toEqual(expect.objectContaining({ policiesAcceptedAt: null }));
   });
 
   it('rejects a room request that exceeds the room capacity', async () => {

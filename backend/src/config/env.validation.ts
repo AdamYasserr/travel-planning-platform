@@ -29,8 +29,11 @@ export const envValidationSchema = Joi.object({
     .pattern(/^whsec_/)
     .optional()
     .allow(''),
-  STRIPE_CHECKOUT_SUCCESS_URL: Joi.string().uri().optional().allow(''),
-  STRIPE_CHECKOUT_CANCEL_URL: Joi.string().uri().optional().allow(''),
+
+  // PAY-04: the one currency of every flight and hotel price and every payment.
+  PLATFORM_CURRENCY: Joi.string()
+    .pattern(/^[A-Za-z]{3}$/)
+    .default('USD'),
 
   BOOKING_HOLD_MINUTES: Joi.number().integer().min(1).max(120).default(10),
 
@@ -46,8 +49,6 @@ export const envValidationSchema = Joi.object({
   FXRATES_STALE_TTL_MS: number;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
-  STRIPE_CHECKOUT_SUCCESS_URL?: string;
-  STRIPE_CHECKOUT_CANCEL_URL?: string;
 }, helpers: Joi.CustomHelpers) => {
   if (
     value.FXRATES_STALE_TTL_MS < value.FXRATES_CACHE_TTL_MS
@@ -60,12 +61,7 @@ export const envValidationSchema = Joi.object({
   );
   if (
     stripeEnabled &&
-    !(
-      value.STRIPE_SECRET_KEY &&
-      value.STRIPE_WEBHOOK_SECRET &&
-      value.STRIPE_CHECKOUT_SUCCESS_URL &&
-      value.STRIPE_CHECKOUT_CANCEL_URL
-    )
+    !(value.STRIPE_SECRET_KEY && value.STRIPE_WEBHOOK_SECRET)
   ) {
     return helpers.error('any.invalid');
   }

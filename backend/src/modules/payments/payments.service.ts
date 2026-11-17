@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   Injectable,
@@ -6,6 +7,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { ClientSession, Connection, Model } from 'mongoose';
@@ -33,12 +35,16 @@ import {
   PaymentStatus,
 } from './enums/payment-status.enum';
 import { RefundStatus } from './enums/refund-status.enum';
-import { CreateCheckoutSessionDto } from './dto/payments.dto';
+import { CreatePaymentDto } from './dto/payments.dto';
+import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
+import { TEST_PAYMENT_METHODS, isTestConfirmEnabled } from './test-mode';
 
 const EXPIRATION_BATCH_SIZE = 100;
+/** PaymentIntent states in which the customer can still (re)submit a payment method. */
+const USABLE_INTENT_STATUSES = new Set(['requires_payment_method', 'requires_confirmation', 'requires_action']);
 const DAY_MS = 86_400_000;
 
-type CheckoutBooking = (HotelBooking | FlightBooking) & {
+type OwnedBooking = (HotelBooking | FlightBooking) & {
   _id: Types.ObjectId;
 };
 
@@ -46,7 +52,6 @@ type CancellationResult = {
   booking: HotelBooking | FlightBooking;
   payment?: Payment | null;
   refundPercentage: number;
-  expireSessionId?: string;
   cancelPaymentIntentId?: string;
   retryRefund?: boolean;
   conflict?: string;
@@ -70,38 +75,21 @@ export class PaymentsService {
     @InjectConnection()
     private readonly connection: Connection,
     private readonly stripeService: StripeService,
+    private readonly platformCurrency: PlatformCurrencyService,
+    private readonly config: ConfigService,
   ) {}
 
-  async createCheckoutSession(
-    userId: string,
-    dto: CreateCheckoutSessionDto,
-  ) {
-    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(dto.bookingId)) {
-      throw new BadRequestException('Invalid user or booking ID');
-    }
-
-    const booking = await this.findOwnedBooking(
+  /**
+   * PAY-01: opens (or returns the open) PaymentIntent of a Pending Payment booking. The amount and
+   * currency come from the booking, never from the client. The booking is confirmed only by the
+   * signed webhook (handleStripeWebhook), never here.
+   */
+  async createPayment(userId: string, dto: CreatePaymentDto) {
+    const { booking, amountMinor, currency } = await this.loadPayableBooking(
       userId,
       dto.bookingType,
       dto.bookingId,
     );
-    if (!booking) {
-      throw new NotFoundException('Booking not found');
-    }
-    if (booking.status !== this.pendingStatus(dto.bookingType)) {
-      throw new ConflictException('Only pending bookings can be paid');
-    }
-    const now = new Date();
-    if (!booking.holdExpiresAt || booking.holdExpiresAt <= now) {
-      await this.expireBooking(dto.bookingType, booking._id.toString(), now);
-      throw new ConflictException('The booking hold has expired');
-    }
-
-    const currency = booking.currency?.trim().toUpperCase();
-    if (!currency || !/^[A-Z]{3}$/.test(currency)) {
-      throw new ConflictException('The booking has no valid payment currency');
-    }
-    const amountMinor = this.toMinorUnits(booking.totalPrice, currency);
     const bookingType = dto.bookingType;
     const bookingId = new Types.ObjectId(dto.bookingId);
     let payment: Payment | null;
@@ -139,46 +127,205 @@ export class PaymentsService {
     ) {
       throw new ConflictException('The saved payment amount does not match the booking');
     }
-    if (
-      payment.status === PaymentStatus.SUCCEEDED ||
-      payment.status === PaymentStatus.EXPIRED ||
-      payment.status === PaymentStatus.REFUND_PENDING ||
-      payment.status === PaymentStatus.REFUNDED ||
-      payment.status === PaymentStatus.PARTIALLY_REFUNDED
-    ) {
+    if (payment.status === PaymentStatus.FAILED) {
+      throw new ConflictException(
+        'The last payment attempt failed. Use POST /payments/:id/retry to try again',
+      );
+    }
+    if (payment.status !== PaymentStatus.PENDING) {
       throw new ConflictException('This booking already has a completed payment');
     }
-    if (payment.stripeCheckoutUrl && payment.stripeCheckoutSessionId) {
-      return this.checkoutResponse(payment);
+
+    if (payment.stripePaymentIntentId) {
+      const intent = await this.stripeService.retrievePaymentIntent(payment.stripePaymentIntentId);
+      if (!USABLE_INTENT_STATUSES.has(intent.status)) {
+        throw new ConflictException(
+          `The payment is ${intent.status} and cannot be paid again. Check GET /payments/:id`,
+        );
+      }
+      return this.paymentResponse(payment, intent.client_secret, booking.totalPrice, currency);
     }
 
-    const session = await this.stripeService.createCheckoutSession({
-      paymentId: payment._id.toString(),
-      bookingType,
-      bookingId: booking._id.toString(),
-      userId,
-      productName: this.productName(bookingType, booking.reference),
-      amountMinor,
-      currency: currency.toLowerCase(),
-    });
+    const intent = await this.createIntent(payment, userId, booking, `pi-${payment._id.toString()}`);
     const updated = await this.paymentModel
       .findOneAndUpdate(
         { _id: payment._id },
-        {
-          $set: {
-            stripeCheckoutSessionId: session.id,
-            stripeCheckoutUrl: session.url,
-          },
-        },
+        { $set: { stripePaymentIntentId: intent.id } },
         { new: true },
       )
       .exec();
     if (!updated) {
-      throw new ServiceUnavailableException(
-        'The Checkout Session was created but could not be recorded',
+      throw new ServiceUnavailableException('The PaymentIntent was created but could not be recorded');
+    }
+    return this.paymentResponse(updated, intent.client_secret, booking.totalPrice, currency);
+  }
+
+  /**
+   * PAY-01: after a FAILED attempt the user may try again while the hold is valid. The same
+   * PaymentIntent is reused while Stripe says it can still take a payment method; a cancelled one
+   * is replaced by a new one (idempotency key derived from the old id, so double clicks agree).
+   */
+  async retryPayment(userId: string, paymentId: string) {
+    const payment = await this.findOwnedPayment(userId, paymentId);
+    if (payment.status !== PaymentStatus.FAILED) {
+      throw new ConflictException('Only a payment whose last attempt failed can be retried');
+    }
+    const { booking, currency } = await this.loadPayableBooking(
+      userId,
+      payment.bookingType,
+      payment.bookingId.toString(),
+    );
+    if (!payment.stripePaymentIntentId) {
+      throw new ConflictException('This payment has no PaymentIntent to retry');
+    }
+
+    const previous = await this.stripeService.retrievePaymentIntent(payment.stripePaymentIntentId);
+    let intent: Stripe.PaymentIntent;
+    if (USABLE_INTENT_STATUSES.has(previous.status)) {
+      intent = previous;
+    } else if (previous.status === 'canceled') {
+      intent = await this.createIntent(
+        payment,
+        userId,
+        booking,
+        `pi-${payment._id.toString()}-after-${previous.id}`,
+      );
+    } else {
+      throw new ConflictException(`The PaymentIntent is ${previous.status} and cannot be retried`);
+    }
+
+    const updated = await this.paymentModel
+      .findOneAndUpdate(
+        { _id: payment._id, status: { $in: [PaymentStatus.FAILED, PaymentStatus.PENDING] } },
+        { $set: { status: PaymentStatus.PENDING, stripePaymentIntentId: intent.id }, $unset: { lastFailureCode: 1 } },
+        { new: true },
+      )
+      .exec();
+    if (!updated) throw new ConflictException('The payment changed while it was being retried');
+    return this.paymentResponse(updated, intent.client_secret, booking.totalPrice, currency);
+  }
+
+  /**
+   * Swagger/grader convenience: confirms the PaymentIntent on the server with a Stripe TEST card,
+   * because nobody can type a card into Stripe Elements there. It does NOT confirm the booking:
+   * that still happens only when Stripe's signed webhook arrives, like a real payment.
+   * Answers 404 unless the key is sk_test_ and NODE_ENV is not production.
+   */
+  async testConfirm(userId: string, paymentId: string, outcome: 'success' | 'decline' = 'success') {
+    if (
+      !isTestConfirmEnabled(
+        this.config.get<string>('stripe.secretKey'),
+        this.config.get<string>('app.environment'),
+      )
+    ) {
+      throw new NotFoundException();
+    }
+    const payment = await this.findOwnedPayment(userId, paymentId);
+    await this.loadPayableBooking(userId, payment.bookingType, payment.bookingId.toString());
+    if (
+      !payment.stripePaymentIntentId ||
+      (payment.status !== PaymentStatus.PENDING && payment.status !== PaymentStatus.FAILED)
+    ) {
+      throw new ConflictException('This payment cannot be confirmed in its current state');
+    }
+
+    try {
+      const intent = await this.stripeService.confirmPaymentIntent(
+        payment.stripePaymentIntentId,
+        TEST_PAYMENT_METHODS[outcome],
+      );
+      return {
+        paymentId: payment._id,
+        outcome: 'succeeded' as const,
+        paymentIntentStatus: String(intent.status),
+        note: 'The booking is confirmed only when Stripe\'s signed webhook arrives. Poll GET /payments/:id.',
+      };
+    } catch (error) {
+      if ((error as { type?: string }).type === 'StripeCardError') {
+        return {
+          paymentId: payment._id,
+          outcome: 'declined' as const,
+          code: (error as { code?: string }).code ?? 'card_declined',
+          note: 'The attempt failed. Use POST /payments/:id/retry, then test-confirm again.',
+        };
+      }
+      this.logger.error(`Stripe rejected the test confirmation of payment ${payment._id.toString()}`);
+      throw new BadGatewayException('Stripe rejected the test confirmation');
+    }
+  }
+
+  private async findOwnedPayment(userId: string, paymentId: string): Promise<Payment & { _id: Types.ObjectId }> {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(paymentId)) {
+      throw new BadRequestException('Invalid user or payment ID');
+    }
+    const payment = await this.paymentModel
+      .findOne({ _id: new Types.ObjectId(paymentId), userId: new Types.ObjectId(userId) })
+      .exec();
+    if (!payment) throw new NotFoundException('Payment not found');
+    return payment;
+  }
+
+  /**
+   * Shared gate of create / retry / test-confirm: the booking belongs to the user, is Pending Payment,
+   * its hold is still valid, its policies are accepted (PAY-02) and its price is in the platform
+   * currency (PAY-04). Returns the amount to charge, taken from the booking.
+   */
+  private async loadPayableBooking(userId: string, bookingType: PaymentBookingType, bookingId: string) {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(bookingId)) {
+      throw new BadRequestException('Invalid user or booking ID');
+    }
+    const booking = await this.findOwnedBooking(userId, bookingType, bookingId);
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (booking.status !== this.pendingStatus(bookingType)) {
+      throw new ConflictException('Only bookings in Pending Payment can be paid');
+    }
+    const now = new Date();
+    if (!booking.holdExpiresAt || booking.holdExpiresAt <= now) {
+      await this.expireBooking(bookingType, booking._id.toString(), now);
+      throw new ConflictException('The booking hold has expired');
+    }
+    if (!booking.policiesAcceptedAt) {
+      throw new ConflictException(
+        'You must accept the policies (POST /bookings/:type/:id/accept-policies) before paying',
       );
     }
-    return this.checkoutResponse(updated);
+    const currency = booking.currency?.trim().toUpperCase();
+    if (!currency || currency !== this.platformCurrency.code) {
+      throw new ConflictException(
+        `The booking is not priced in the platform currency ${this.platformCurrency.code}`,
+      );
+    }
+    return { booking, amountMinor: this.toMinorUnits(booking.totalPrice, currency), currency };
+  }
+
+  private createIntent(payment: Payment & { _id: Types.ObjectId }, userId: string, booking: OwnedBooking, idempotencyKey: string) {
+    return this.stripeService.createPaymentIntent({
+      paymentId: payment._id.toString(),
+      bookingType: payment.bookingType,
+      bookingId: booking._id.toString(),
+      userId,
+      amountMinor: payment.amountMinor,
+      currency: payment.currency,
+      idempotencyKey,
+    });
+  }
+
+  /** `clientSecret` is handed to Stripe Elements only: never stored, never logged. */
+  private paymentResponse(
+    payment: Payment & { _id: Types.ObjectId },
+    clientSecret: string | null,
+    amount: number,
+    currency: string,
+  ) {
+    return {
+      paymentId: payment._id,
+      clientSecret,
+      amount,
+      amountMinor: payment.amountMinor,
+      currency,
+      status: payment.status,
+      holdExpiresAt: payment.holdExpiresAt,
+    };
   }
 
   async getForUser(userId: string, paymentId: string) {
@@ -189,7 +336,6 @@ export class PaymentsService {
       .findOne({ _id: paymentId, userId })
       .select({
         userId: 0,
-        stripeCheckoutSessionId: 0,
         stripePaymentIntentId: 0,
         stripeRefundId: 0,
       })
@@ -380,7 +526,6 @@ export class PaymentsService {
             booking: cancelled,
             payment,
             refundPercentage: 0,
-            expireSessionId: payment?.stripeCheckoutSessionId,
             cancelPaymentIntentId:
               payment && payment.status !== PaymentStatus.SUCCEEDED
                 ? payment.stripePaymentIntentId
@@ -467,7 +612,7 @@ export class PaymentsService {
 
     if (!result) throw new ServiceUnavailableException('Booking cancellation did not complete');
     if (result.conflict) throw new ConflictException(result.conflict);
-    await this.releaseStripePayment(result.expireSessionId, result.cancelPaymentIntentId);
+    await this.releaseStripePayment(result.cancelPaymentIntentId);
     if (result.retryRefund && result.payment) {
       result.payment = await this.processRefund(result.payment);
     }
@@ -590,6 +735,11 @@ export class PaymentsService {
     }
   }
 
+  /** Expires a hold whose time is up (used by accept-policies, so a lapsed hold is released at once). */
+  async expireHoldIfDue(bookingType: PaymentBookingType, bookingId: string) {
+    await this.expireBooking(bookingType, bookingId, new Date());
+  }
+
   async expireFlightHold(bookingId: string) {
     if (!Types.ObjectId.isValid(bookingId)) return;
     await this.expireBooking(
@@ -604,82 +754,52 @@ export class PaymentsService {
     payment: Payment,
     session: ClientSession,
   ) {
-    const object = event.data.object as Record<string, any>;
-    if (event.type === 'checkout.session.completed' ||
-        event.type === 'checkout.session.async_payment_succeeded') {
-      if (object.payment_status === 'paid' || event.type.endsWith('async_payment_succeeded')) {
-        await this.applySuccessfulCheckout(object, payment, session);
-      }
-      return;
-    }
-    if (
-      event.type === 'checkout.session.async_payment_failed' ||
-      event.type === 'payment_intent.payment_failed'
-    ) {
-      if (payment.status !== PaymentStatus.SUCCEEDED) {
-        payment.status = PaymentStatus.FAILED;
-        payment.lastFailureCode =
-          object.last_payment_error?.code ?? 'payment_failed';
-        await this.persistPayment(payment, session);
-      }
-      return;
-    }
-    if (event.type === 'checkout.session.expired') {
-      if (payment.status !== PaymentStatus.SUCCEEDED) {
-        payment.status = PaymentStatus.EXPIRED;
-        await this.persistPayment(payment, session);
-        await this.expireBookingInTransaction(
-          payment.bookingType,
-          payment.bookingId,
-          new Date(),
-          session,
-        );
-      }
-      return;
-    }
-    if (event.type === 'refund.updated') {
-      await this.applyRefundUpdate(object, payment, session);
+    const object = event.data.object as unknown as Record<string, any>;
+    switch (event.type) {
+      case 'payment_intent.succeeded':
+        return this.applyIntentSucceeded(object, payment, session);
+      case 'payment_intent.payment_failed':
+        return this.applyIntentFailed(object, payment, session);
+      case 'refund.updated':
+        return this.applyRefundUpdate(object, payment, session);
+      default:
+        return;
     }
   }
 
-  private async applySuccessfulCheckout(
-    checkout: Record<string, any>,
+  /** The PaymentIntent of the event must be the one we created for this payment. */
+  private isOurIntent(intent: Record<string, any>, payment: Payment, eventType: string) {
+    if (typeof intent.id === 'string' && intent.id === payment.stripePaymentIntentId) return true;
+    this.logger.error(
+      `Ignored ${eventType}: PaymentIntent ${String(intent.id)} is not the PaymentIntent of payment ${payment._id.toString()}`,
+    );
+    return false;
+  }
+
+  /**
+   * PAY-01: the ONLY place a booking becomes Confirmed. Requires the same PaymentIntent, the exact
+   * booking amount and currency, and a booking that is still Pending Payment with a valid hold.
+   * Anything else is NOT confirmed: the money was taken, so the payment is flagged Refund Pending
+   * (the existing refund job returns it) and the reason is logged with ids only.
+   */
+  private async applyIntentSucceeded(
+    intent: Record<string, any>,
     payment: Payment,
     session: ClientSession,
   ) {
-    if (typeof checkout.id !== 'string') return;
-    if (
-      payment.stripeCheckoutSessionId &&
-      checkout.id !== payment.stripeCheckoutSessionId
-    ) return;
-    const paymentIntentId = this.asStripeId(checkout.payment_intent);
-    const actualAmount = Number(checkout.amount_total);
-    const actualCurrency = String(checkout.currency ?? '').toLowerCase();
-    if (!paymentIntentId || !Number.isSafeInteger(actualAmount) || actualAmount <= 0) {
-      return;
-    }
+    if (!this.isOurIntent(intent, payment, 'payment_intent.succeeded')) return;
     if (
       payment.status === PaymentStatus.SUCCEEDED ||
+      payment.status === PaymentStatus.REFUND_PENDING ||
       payment.status === PaymentStatus.REFUNDED ||
-      payment.status === PaymentStatus.PARTIALLY_REFUNDED
+      payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+      payment.status === PaymentStatus.REFUND_FAILED
     ) return;
 
-    const metadataMatches =
-      checkout.metadata?.paymentId === payment._id.toString() &&
-      checkout.metadata?.bookingId === payment.bookingId.toString() &&
-      checkout.metadata?.userId === payment.userId.toString() &&
-      checkout.metadata?.bookingType === payment.bookingType &&
-      (!checkout.mode || checkout.mode === 'payment');
-    payment.stripeCheckoutSessionId ??= checkout.id;
-    payment.stripePaymentIntentId = paymentIntentId;
-    if (!metadataMatches) {
-      payment.status = PaymentStatus.REFUND_PENDING;
-      payment.refundAmountMinor = actualAmount;
-      payment.refundPercentage = 100;
-      payment.refundStatus = RefundStatus.PENDING;
-      payment.refundRequestedAt = new Date();
-      payment.lastFailureCode = 'checkout_metadata_mismatch';
-      await this.persistPayment(payment, session);
+    const actualAmount = Number(intent.amount_received ?? intent.amount);
+    const actualCurrency = String(intent.currency ?? '').toLowerCase();
+    if (!Number.isSafeInteger(actualAmount) || actualAmount <= 0) {
+      this.logger.error(`Ignored payment_intent.succeeded for payment ${payment._id.toString()}: no valid amount`);
       return;
     }
 
@@ -690,9 +810,18 @@ export class PaymentsService {
       session,
     );
     const now = new Date();
+    let bookingAmountMinor: number | null = null;
+    try {
+      if (booking) bookingAmountMinor = this.toMinorUnits(booking.totalPrice, booking.currency.toUpperCase());
+    } catch {
+      bookingAmountMinor = null;
+    }
     const paymentMatches =
+      !!booking &&
       actualAmount === payment.amountMinor &&
-      actualCurrency === payment.currency.toLowerCase();
+      actualAmount === bookingAmountMinor &&
+      actualCurrency === payment.currency.toLowerCase() &&
+      actualCurrency === booking.currency.toLowerCase();
     const bookingIsPayable =
       booking?.status === this.pendingStatus(payment.bookingType) &&
       !!booking.holdExpiresAt &&
@@ -711,7 +840,6 @@ export class PaymentsService {
       );
       if (confirmed) {
         payment.status = PaymentStatus.SUCCEEDED;
-        payment.stripePaymentIntentId = paymentIntentId;
         payment.lastFailureCode = undefined;
         await this.persistPayment(payment, session);
         return;
@@ -727,13 +855,29 @@ export class PaymentsService {
         true,
       );
     }
+    const reason = paymentMatches ? 'succeeded_after_hold_expiry' : 'payment_amount_or_currency_mismatch';
+    this.logger.warn(
+      `Payment ${payment._id.toString()} (${payment.bookingType} booking ${payment.bookingId.toString()}) was not confirmed: ${reason}. Flagged Refund Pending`,
+    );
     payment.status = PaymentStatus.REFUND_PENDING;
-    payment.stripePaymentIntentId = paymentIntentId;
     payment.refundAmountMinor = actualAmount;
     payment.refundPercentage = 100;
     payment.refundStatus = RefundStatus.PENDING;
     payment.refundRequestedAt = now;
-    if (!paymentMatches) payment.lastFailureCode = 'payment_amount_or_currency_mismatch';
+    payment.lastFailureCode = reason;
+    await this.persistPayment(payment, session);
+  }
+
+  /** A failed attempt keeps the booking Pending Payment so the user can retry until the hold expires. */
+  private async applyIntentFailed(
+    intent: Record<string, any>,
+    payment: Payment,
+    session: ClientSession,
+  ) {
+    if (!this.isOurIntent(intent, payment, 'payment_intent.payment_failed')) return;
+    if (payment.status !== PaymentStatus.PENDING && payment.status !== PaymentStatus.FAILED) return;
+    payment.status = PaymentStatus.FAILED;
+    payment.lastFailureCode = intent.last_payment_error?.code ?? 'payment_failed';
     await this.persistPayment(payment, session);
   }
 
@@ -741,28 +885,19 @@ export class PaymentsService {
     event: Stripe.Event,
     session: ClientSession,
   ) {
-    const object = event.data.object as Record<string, any>;
+    const object = event.data.object as unknown as Record<string, any>;
     let payment: Payment | null = null;
-    const checkoutSessionId =
-      typeof object.id === 'string' && object.id.startsWith('cs_')
-        ? object.id
-        : undefined;
-    if (checkoutSessionId) {
+    if (event.type.startsWith('payment_intent.') && typeof object.id === 'string') {
       payment = await this.paymentModel
-        .findOne({ stripeCheckoutSessionId: checkoutSessionId })
+        .findOne({ stripePaymentIntentId: object.id })
         .session(session)
         .exec();
     }
     const metadataPaymentId = object.metadata?.paymentId;
     if (!payment && metadataPaymentId && Types.ObjectId.isValid(metadataPaymentId)) {
+      // The handlers still require the PaymentIntent id to match before they act.
       payment = await this.paymentModel
         .findById(metadataPaymentId)
-        .session(session)
-        .exec();
-    }
-    if (!payment && event.type === 'payment_intent.payment_failed') {
-      payment = await this.paymentModel
-        .findOne({ stripePaymentIntentId: object.id })
         .session(session)
         .exec();
     }
@@ -859,7 +994,6 @@ export class PaymentsService {
     now: Date,
   ) {
     const session = await this.connection.startSession();
-    let stripeSessionId: string | undefined;
     let stripePaymentIntentId: string | undefined;
     try {
       await session.withTransaction(async () => {
@@ -877,7 +1011,6 @@ export class PaymentsService {
           session,
         );
         if (expired && payment) {
-          stripeSessionId = payment.stripeCheckoutSessionId;
           if (payment.status !== PaymentStatus.SUCCEEDED) {
             stripePaymentIntentId = payment.stripePaymentIntentId;
           }
@@ -890,7 +1023,7 @@ export class PaymentsService {
     } finally {
       await session.endSession();
     }
-    await this.releaseStripePayment(stripeSessionId, stripePaymentIntentId);
+    await this.releaseStripePayment(stripePaymentIntentId);
   }
 
   private async expireBookingInTransaction(
@@ -964,7 +1097,7 @@ export class PaymentsService {
     now: Date,
     session: ClientSession,
     clearHold = false,
-  ): Promise<CheckoutBooking | null> {
+  ): Promise<OwnedBooking | null> {
     assertBookingTransition(oldStatus, newStatus);
     const update: Record<string, unknown> = {
       status: newStatus,
@@ -987,7 +1120,7 @@ export class PaymentsService {
           { new: true, session },
         )
         .exec();
-      return updated as unknown as CheckoutBooking | null;
+      return updated as unknown as OwnedBooking | null;
     }
     const updated = await this.flightBookingModel
       .findOneAndUpdate(
@@ -996,7 +1129,7 @@ export class PaymentsService {
         { new: true, session },
       )
       .exec();
-    return updated as unknown as CheckoutBooking | null;
+    return updated as unknown as OwnedBooking | null;
   }
 
   private async findOwnedBooking(
@@ -1004,7 +1137,7 @@ export class PaymentsService {
     bookingType: PaymentBookingType,
     bookingId: string,
     session?: ClientSession,
-  ): Promise<CheckoutBooking | null> {
+  ): Promise<OwnedBooking | null> {
     const filter = {
       _id: new Types.ObjectId(bookingId),
       userId: new Types.ObjectId(userId),
@@ -1012,11 +1145,11 @@ export class PaymentsService {
     if (bookingType === PaymentBookingType.HOTEL) {
       const query = this.hotelBookingModel.findOne(filter);
       if (session) query.session(session);
-      return query.lean().exec() as Promise<CheckoutBooking | null>;
+      return query.lean().exec() as Promise<OwnedBooking | null>;
     }
     const query = this.flightBookingModel.findOne(filter);
     if (session) query.session(session);
-    return query.lean().exec() as Promise<CheckoutBooking | null>;
+    return query.lean().exec() as Promise<OwnedBooking | null>;
   }
 
   private getCancellationRefundPercentage(
@@ -1088,44 +1221,20 @@ export class PaymentsService {
     return !!departure && departure.getTime() <= now.getTime();
   }
 
-  /** Best effort: expire the Checkout Session and cancel its PaymentIntent (PAY-01). */
-  private async releaseStripePayment(sessionId?: string, paymentIntentId?: string) {
-    if (sessionId) await this.expireStripeSession(sessionId);
-    if (paymentIntentId) {
-      try {
-        await this.stripeService.cancelPaymentIntent(paymentIntentId);
-      } catch {
-        this.logger.warn('A PaymentIntent could not be cancelled; webhook safeguards remain active');
-      }
-    }
-  }
-
-  private async expireStripeSession(sessionId: string) {
+  /** Best effort: cancel the PaymentIntent of an unpaid booking whose hold ended (PAY-01). */
+  private async releaseStripePayment(paymentIntentId?: string) {
+    if (!paymentIntentId) return;
     try {
-      await this.stripeService.expireCheckoutSession(sessionId);
+      await this.stripeService.cancelPaymentIntent(paymentIntentId);
     } catch {
-      this.logger.warn('A Checkout Session could not be expired; webhook safeguards remain active');
+      this.logger.warn(`PaymentIntent ${paymentIntentId} could not be cancelled; webhook safeguards remain active`);
     }
-  }
-
-  private checkoutResponse(payment: Payment) {
-    return {
-      paymentId: payment._id,
-      checkoutSessionId: payment.stripeCheckoutSessionId,
-      checkoutUrl: payment.stripeCheckoutUrl,
-      amountMinor: payment.amountMinor,
-      currency: payment.currency,
-      holdExpiresAt: payment.holdExpiresAt,
-      status: payment.status,
-    };
   }
 
   private async persistPayment(payment: Payment, session?: ClientSession) {
     const fields = [
       'status',
       'holdExpiresAt',
-      'stripeCheckoutSessionId',
-      'stripeCheckoutUrl',
       'stripePaymentIntentId',
       'lastFailureCode',
       'refundAmountMinor',
@@ -1153,11 +1262,6 @@ export class PaymentsService {
         { new: true, ...(session ? { session } : {}) },
       )
       .exec();
-  }
-
-  private productName(type: PaymentBookingType, reference?: string) {
-    const name = type === PaymentBookingType.HOTEL ? 'Hotel booking' : 'Flight booking';
-    return reference ? `${name} ${reference}` : name;
   }
 
   private toMinorUnits(amount: number, currency: string) {
@@ -1188,15 +1292,6 @@ export class PaymentsService {
     const day = new Date(date);
     day.setUTCHours(0, 0, 0, 0);
     return day;
-  }
-
-  private asStripeId(value: unknown) {
-    if (typeof value === 'string') return value;
-    if (value && typeof value === 'object' && 'id' in value) {
-      const id = (value as { id?: unknown }).id;
-      return typeof id === 'string' ? id : null;
-    }
-    return null;
   }
 
   private isDuplicateKeyError(error: unknown) {

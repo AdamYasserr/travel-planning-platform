@@ -14,69 +14,47 @@ export class StripeService {
     this.stripe = secretKey ? new Stripe(secretKey) : null;
   }
 
-  async createCheckoutSession(input: {
+  /**
+   * PAY-01: the card is collected by Stripe Elements in the browser, so card data never reaches us.
+   * Metadata carries ids only. The idempotency key makes a repeated call return the same intent.
+   */
+  async createPaymentIntent(input: {
     paymentId: string;
     bookingType: string;
     bookingId: string;
     userId: string;
-    productName: string;
     amountMinor: number;
     currency: string;
-  }): Promise<Stripe.Checkout.Session> {
-    const stripe = this.getClient();
-    const successUrl = this.configService.get<string>(
-      'stripe.checkoutSuccessUrl',
-    );
-    const cancelUrl = this.configService.get<string>(
-      'stripe.checkoutCancelUrl',
-    );
-    if (!successUrl || !cancelUrl) {
-      throw new ServiceUnavailableException(
-        'Stripe Checkout return URLs are not configured',
-      );
-    }
-
-    const session = await stripe.checkout.sessions.create(
+    idempotencyKey: string;
+  }): Promise<Stripe.PaymentIntent> {
+    return this.getClient().paymentIntents.create(
       {
-        mode: 'payment',
-        client_reference_id: input.paymentId,
-        success_url: `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: cancelUrl,
-        expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: input.currency.toLowerCase(),
-              unit_amount: input.amountMinor,
-              product_data: { name: input.productName },
-            },
-          },
-        ],
+        amount: input.amountMinor,
+        currency: input.currency.toLowerCase(),
+        automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
         metadata: {
           paymentId: input.paymentId,
           bookingType: input.bookingType,
           bookingId: input.bookingId,
           userId: input.userId,
         },
-        payment_intent_data: {
-          metadata: {
-            paymentId: input.paymentId,
-            bookingType: input.bookingType,
-            bookingId: input.bookingId,
-            userId: input.userId,
-          },
-        },
       },
-      { idempotencyKey: `checkout-${input.paymentId}` },
+      { idempotencyKey: input.idempotencyKey },
     );
+  }
 
-    if (!session.url) {
-      throw new ServiceUnavailableException(
-        'Stripe did not return a Checkout URL',
-      );
-    }
-    return session;
+  async retrievePaymentIntent(paymentIntentId: string): Promise<Stripe.PaymentIntent> {
+    return this.getClient().paymentIntents.retrieve(paymentIntentId);
+  }
+
+  /** Test-mode helper only (see PaymentsService.testConfirm). */
+  async confirmPaymentIntent(
+    paymentIntentId: string,
+    paymentMethod: string,
+  ): Promise<Stripe.PaymentIntent> {
+    return this.getClient().paymentIntents.confirm(paymentIntentId, {
+      payment_method: paymentMethod,
+    });
   }
 
   constructWebhookEvent(payload: Buffer, signature: string): Stripe.Event {
@@ -90,12 +68,6 @@ export class StripeService {
       );
     }
     return stripe.webhooks.constructEvent(payload, signature, webhookSecret);
-  }
-
-  async expireCheckoutSession(
-    sessionId: string,
-  ): Promise<Stripe.Checkout.Session> {
-    return this.getClient().checkout.sessions.expire(sessionId);
   }
 
   async cancelPaymentIntent(

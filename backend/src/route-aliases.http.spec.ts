@@ -57,7 +57,7 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
     'updateBudgetEntryById', 'removeBudgetEntryById', 'updateTransportCostById', 'removeTransportCostById',
     'updateActivity', 'removeActivity', 'updateBudgetEntry', 'removeBudgetEntry', 'updateTransportCost', 'removeTransportCost',
   ]);
-  const payments = mock(['getForUser', 'getRefundForUser', 'handleStripeWebhook', 'createCheckoutSession']);
+  const payments = mock(['getForUser', 'getRefundForUser', 'handleStripeWebhook']);
   const hotels = mock(['update', 'getRoomStatuses']);
   const auth = mock(['changePassword']);
 
@@ -196,7 +196,7 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
   });
 
   describe('payments and refunds', () => {
-    const payload = '{"id":"evt_1",  "type":"checkout.session.completed"}\n';
+    const payload = '{"id":"evt_1",  "type":"payment_intent.succeeded"}\n';
     it.each(['/payments/webhook', '/stripe/webhook'])('POST %s verifies the signature against the exact raw bytes without auth', async (path) => {
       payments.handleStripeWebhook.mockClear();
       const res = await http.post(`/api${path}`).set('stripe-signature', 't=1,v1=abc').set('content-type', 'application/json').send(payload);

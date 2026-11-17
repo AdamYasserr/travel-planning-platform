@@ -25,7 +25,7 @@ import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { Review } from './schemas/review.schema';
 import { ReferenceValidationService } from '../reference-data/reference-validation.service';
-import { SupportedCurrenciesService } from '../reference-data/supported-currencies.service';
+import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
 import { presentAuthor } from '../../common/users/deleted-user';
 import { runBookingTransaction } from '../../common/booking/booking-transaction';
 import { activeReservationClause } from '../hotel-bookings/room-reservation.util';
@@ -55,7 +55,7 @@ export class HotelsService {
     @InjectModel(Review.name)
     private readonly reviewModel: Model<Review>,
     private readonly references: ReferenceValidationService,
-    private readonly currencies: SupportedCurrenciesService,
+    private readonly platformCurrency: PlatformCurrencyService,
     @InjectConnection()
     private readonly connection: Connection,
   ) {}
@@ -176,7 +176,7 @@ export class HotelsService {
     }
 
     if (dto.currency !== undefined) {
-      dto.currency = await this.currencies.assertSupported(dto.currency, 'currency');
+      dto.currency = this.platformCurrency.resolve(dto.currency);
     }
 
     const updatedRoom = await this.roomModel
@@ -224,7 +224,7 @@ export class HotelsService {
       );
     }
 
-    dto.currency = await this.currencies.assertSupported(dto.currency, 'currency');
+    dto.currency = this.platformCurrency.resolve(dto.currency);
 
     const hotel = await this.hotelModel.findById(normalizedHotelId).exec();
 

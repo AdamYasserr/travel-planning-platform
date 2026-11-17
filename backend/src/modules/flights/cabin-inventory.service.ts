@@ -20,6 +20,7 @@ import {
 } from './schemas/flight.schema';
 
 import { User } from '../../users/user.schema';
+import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
 import { UserRole } from '../../common/enums/user-role.enum';
 
 import {
@@ -38,6 +39,8 @@ export class CabinInventoryService {
 
     @InjectModel(User.name)
     private readonly userModel: Model<User>,
+
+    private readonly platformCurrency: PlatformCurrencyService,
   ) {}
 
   // Check airline management permissions
@@ -150,6 +153,8 @@ export class CabinInventoryService {
       );
     }
 
+    const currency = this.platformCurrency.resolve(dto.currency);
+
     const existing = await this.inventoryModel
       .findOne({
         flightId: new Types.ObjectId(flightId),
@@ -170,7 +175,7 @@ export class CabinInventoryService {
         totalSeats: dto.totalSeats,
         availableSeats: dto.totalSeats,
         price: dto.price,
-        currency: dto.currency.trim().toUpperCase(),
+        currency,
         freeBagsCount: dto.freeBagsCount,
         maxWeightPerBagKg: dto.maxWeightPerBagKg,
       });
@@ -302,14 +307,8 @@ export class CabinInventoryService {
       );
     }
 
-    if (
-      dto.currency !== undefined &&
-      !/^[A-Za-z]{3}$/.test(dto.currency.trim())
-    ) {
-      throw new BadRequestException(
-        'Currency must be a three-letter code',
-      );
-    }
+    // PAY-04: only the platform currency is accepted (400 on `currency` otherwise).
+    if (dto.currency !== undefined) this.platformCurrency.resolve(dto.currency);
 
     if (
       dto.freeBagsCount !== undefined &&
@@ -356,8 +355,7 @@ export class CabinInventoryService {
     }
 
     if (dto.currency !== undefined) {
-      setFields.currency =
-        dto.currency.trim().toUpperCase();
+      setFields.currency = this.platformCurrency.resolve(dto.currency);
     }
 
     // FLT-04: Update baggage allowances
@@ -403,7 +401,8 @@ export class CabinInventoryService {
       .findOneAndUpdate(
         filter,
         [{ $set: setFields }],
-        { new: true },
+        // Mongoose 9 refuses an aggregation-pipeline update unless this is set (it was a 500 before).
+        { new: true, updatePipeline: true },
       )
       .exec();
 

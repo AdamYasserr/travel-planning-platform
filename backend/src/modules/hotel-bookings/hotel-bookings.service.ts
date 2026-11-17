@@ -44,10 +44,6 @@ export class HotelBookingsService {
     if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(dto.hotelId)) {
       throw new BadRequestException('Invalid user or hotel ID');
     }
-    if (dto.policiesAccepted !== true) {
-      throw new BadRequestException('You must accept the hotel booking policies');
-    }
-
     const checkInDate = this.parseDate(dto.checkInDate);
     const checkOutDate = this.parseDate(dto.checkOutDate);
     const today = new Date();
@@ -184,7 +180,7 @@ export class HotelBookingsService {
           status: HotelBookingStatus.PENDING_PAYMENT,
           holdExpiresAt: new Date(now.getTime() + BOOKING_HOLD_DURATION_MS),
           reference: `HTL-${randomUUID()}`,
-          policiesAcceptedAt: now,
+          policiesAcceptedAt: dto.policiesAccepted === true ? now : null,
           checkInTime: hotel.checkInTime,
           checkOutTime: hotel.checkOutTime,
           cancellationTiers: [...(hotel.cancellationTiers ?? [])]

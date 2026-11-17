@@ -14,6 +14,9 @@ import {
   CabinInventory,
   CabinInventorySchema,
 } from '../flights/schemas/cabin-inventory.schema';
+import { ReferenceDataModule } from '../reference-data/reference-data.module';
+import { BookingPoliciesController } from './booking-policies.controller';
+import { BookingPoliciesService } from './booking-policies.service';
 import { PaymentsController } from './payments.controller';
 import { RefundsController } from './refunds.controller';
 import { PaymentsService } from './payments.service';
@@ -23,6 +26,7 @@ import { StripeWebhookController } from '../../integrations/stripe/stripe-webhoo
 @Module({
   imports: [
     StripeModule,
+    ReferenceDataModule,
     MongooseModule.forFeature([
       { name: Payment.name, schema: PaymentSchema },
       { name: StripeWebhookEvent.name, schema: StripeWebhookEventSchema },
@@ -31,8 +35,8 @@ import { StripeWebhookController } from '../../integrations/stripe/stripe-webhoo
       { name: CabinInventory.name, schema: CabinInventorySchema },
     ]),
   ],
-  controllers: [PaymentsController, RefundsController, StripeWebhookController],
-  providers: [PaymentsService],
+  controllers: [PaymentsController, BookingPoliciesController, RefundsController, StripeWebhookController],
+  providers: [PaymentsService, BookingPoliciesService],
   exports: [PaymentsService, MongooseModule],
 })
 export class PaymentsModule {}

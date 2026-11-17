@@ -7,6 +7,7 @@ import { Country, CountrySchema } from './schemas/country.schema';
 import { ReferenceDataController } from './reference-data.controller';
 import { ReferenceDataService } from './reference-data.service';
 import { ReferenceValidationService } from './reference-validation.service';
+import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
 import { SupportedCurrenciesService } from './supported-currencies.service';
 
 @Module({
@@ -19,7 +20,7 @@ import { SupportedCurrenciesService } from './supported-currencies.service';
     ]),
   ],
   controllers: [ReferenceDataController],
-  providers: [ReferenceDataService, ReferenceValidationService, SupportedCurrenciesService],
-  exports: [MongooseModule, ReferenceDataService, ReferenceValidationService, SupportedCurrenciesService],
+  providers: [ReferenceDataService, ReferenceValidationService, SupportedCurrenciesService, PlatformCurrencyService],
+  exports: [MongooseModule, ReferenceDataService, ReferenceValidationService, SupportedCurrenciesService, PlatformCurrencyService],
 })
 export class ReferenceDataModule {}

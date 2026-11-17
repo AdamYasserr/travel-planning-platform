@@ -10,6 +10,7 @@ import { Model, Types } from 'mongoose';
 
 import { CabinInventory, CabinClass } from '../flights/schemas/cabin-inventory.schema';
 import { Flight, FlightStatus } from '../flights/schemas/flight.schema';
+import { BaggagePolicy } from '../airlines/schemas/baggage-policy.schema';
 import { CancellationPolicy } from '../airlines/schemas/cancellation-policy.schema';
 import {
   CreateFlightBookingDto,
@@ -32,15 +33,14 @@ export class FlightBookingsService {
     private readonly inventoryModel: Model<CabinInventory>,
     @InjectModel(CancellationPolicy.name)
     private readonly cancellationPolicyModel: Model<CancellationPolicy>,
+    @InjectModel(BaggagePolicy.name)
+    private readonly baggagePolicyModel: Model<BaggagePolicy>,
     private readonly paymentsService: PaymentsService,
   ) {}
 
   async create(userId: string, dto: CreateFlightBookingDto) {
     if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(dto.flightId)) {
       throw new BadRequestException('Invalid user or flight ID');
-    }
-    if (dto.policiesAccepted !== true) {
-      throw new BadRequestException('You must accept the flight booking policies');
     }
     this.validatePassengers(dto.passengers);
 
@@ -65,6 +65,11 @@ export class FlightBookingsService {
     }
 
     const cancellationPolicy = await this.cancellationPolicyModel
+      .findOne({ airlineId: flight.airlineId })
+      .lean()
+      .exec();
+
+    const baggagePolicy = await this.baggagePolicyModel
       .findOne({ airlineId: flight.airlineId })
       .lean()
       .exec();
@@ -102,7 +107,18 @@ export class FlightBookingsService {
       status: FlightBookingStatus.PENDING_PAYMENT,
       holdExpiresAt: new Date(now.getTime() + BOOKING_HOLD_DURATION_MS),
       reference: `FLT-${randomUUID()}`,
-      policiesAcceptedAt: now,
+      policiesAcceptedAt: dto.policiesAccepted === true ? now : null,
+      baggagePolicy: baggagePolicy
+        ? {
+            carryOnAllowanceKg: baggagePolicy.carryOnAllowanceKg,
+            checkedBaggageAllowanceKg: baggagePolicy.checkedBaggageAllowanceKg,
+            pricePerExtraBag: baggagePolicy.pricePerExtraBag,
+            maxExtraBagsPerPassenger: baggagePolicy.maxExtraBagsPerPassenger,
+            currency: baggagePolicy.currency,
+            freeBagsCount: reservedInventory.freeBagsCount,
+            maxWeightPerBagKg: reservedInventory.maxWeightPerBagKg,
+          }
+        : null,
       cancellationTiers: [...(cancellationPolicy?.tiers ?? [])]
         .sort((a, b) => b.daysBeforeDeparture - a.daysBeforeDeparture)
         .map((tier) => ({

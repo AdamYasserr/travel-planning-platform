@@ -165,11 +165,9 @@ export class HotelBooking {
   @Prop({ type: String, trim: true, default: undefined })
   reference?: string;
 
-  @Prop({
-    type: Date,
-    required: true,
-  })
-  policiesAcceptedAt: Date;
+  // PAY-02: set when the user accepts the policies (at booking time or via accept-policies).
+  @Prop({ type: Date, default: null })
+  policiesAcceptedAt?: Date | null;
 
   @Prop({ type: String, required: true })
   checkInTime: string;

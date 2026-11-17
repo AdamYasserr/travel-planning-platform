@@ -55,14 +55,9 @@ export class Payment {
   @Prop({ type: Date, required: true })
   holdExpiresAt: Date;
 
-  @Prop({ type: String, default: undefined, unique: true, sparse: true })
-  stripeCheckoutSessionId?: string;
-
+  // PAY-01: only the PaymentIntent id, amount, currency and status are stored. Never card data or the client secret.
   @Prop({ type: String, default: undefined, unique: true, sparse: true })
   stripePaymentIntentId?: string;
-
-  @Prop({ type: String, default: undefined })
-  stripeCheckoutUrl?: string;
 
   @Prop({ type: String, default: undefined })
   lastFailureCode?: string;

@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
@@ -43,8 +44,13 @@ export class CreateFlightBookingDto {
   @Type(() => FlightBookingPassengerDto)
   passengers: FlightBookingPassengerDto[];
 
+  @ApiPropertyOptional({
+    description:
+      'Optional. When true the policies are accepted at booking time. Otherwise accept them afterwards with POST /bookings/:type/:id/accept-policies; payment is blocked until then.',
+  })
+  @IsOptional()
   @IsBoolean()
-  policiesAccepted: boolean;
+  policiesAccepted?: boolean;
 }
 
 export class FlightBookingListQueryDto {
