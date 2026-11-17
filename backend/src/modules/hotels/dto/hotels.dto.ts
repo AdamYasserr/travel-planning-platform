@@ -70,17 +70,25 @@ export class CreateHotelDto {
   address: string;
 
   @ApiProperty({
-    description: 'MongoDB ObjectId of a seeded city',
-    example: '507f1f77bcf86cd799439011',
+    description: 'Dataset city_id of an imported city',
+    example: 'cairo',
   })
-  @IsMongoId()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @IsNotEmpty()
   cityId: string;
 
   @ApiProperty({
-    description: 'MongoDB ObjectId of a seeded country',
-    example: '507f1f77bcf86cd799439012',
+    description: 'Dataset country code of an imported country',
+    example: 'EG',
   })
-  @IsMongoId()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @IsString()
+  @IsNotEmpty()
   countryId: string;
 
   @ApiPropertyOptional({ example: 'A hotel overlooking the Nile.' })

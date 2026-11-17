@@ -23,6 +23,8 @@ import { Room } from './schemas/room.schema';
 import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { Review } from './schemas/review.schema';
+import { ReferenceValidationService } from '../reference-data/reference-validation.service';
+import { SupportedCurrenciesService } from '../reference-data/supported-currencies.service';
 import {
   HotelBooking,
   HotelBookingStatus,
@@ -41,20 +43,20 @@ export class HotelsService {
     private readonly hotelBookingModel: Model<HotelBooking>,
     @InjectModel(Review.name)
     private readonly reviewModel: Model<Review>,
+    private readonly references: ReferenceValidationService,
+    private readonly currencies: SupportedCurrenciesService,
   ) {}
 
   async create(dto: CreateHotelDto) {
-    if (
-      !Types.ObjectId.isValid(dto.cityId) ||
-      !Types.ObjectId.isValid(dto.countryId)
-    ) {
-      throw new BadRequestException('Invalid city or country ID');
-    }
+    // cityId is a dataset city_id (e.g. "cairo"); countryId is a dataset country code (e.g. "EG").
+    const cityId = dto.cityId.trim();
+    const countryId = dto.countryId.trim().toUpperCase();
+    await this.references.assertCityInCountry(cityId, countryId);
 
     return this.hotelModel.create({
       ...dto,
-      cityId: new Types.ObjectId(dto.cityId),
-      countryId: new Types.ObjectId(dto.countryId),
+      cityId,
+      countryId,
       isActive: true,
     });
   }
@@ -96,12 +98,16 @@ export class HotelsService {
       ...dto,
     } as Partial<Hotel>;
 
-    if (dto.cityId) {
-      updateData.cityId = new Types.ObjectId(dto.cityId);
-    }
-
-    if (dto.countryId) {
-      updateData.countryId = new Types.ObjectId(dto.countryId);
+    if (dto.cityId || dto.countryId) {
+      const existing = await this.hotelModel.findById(normalizedHotelId).exec();
+      if (!existing) {
+        throw new NotFoundException('Hotel not found');
+      }
+      const cityId = (dto.cityId ?? existing.cityId).trim();
+      const countryId = (dto.countryId ?? existing.countryId).trim().toUpperCase();
+      await this.references.assertCityInCountry(cityId, countryId);
+      updateData.cityId = cityId;
+      updateData.countryId = countryId;
     }
 
     const updatedHotel = await this.hotelModel
@@ -156,6 +162,10 @@ export class HotelsService {
       );
     }
 
+    if (dto.currency !== undefined) {
+      dto.currency = await this.currencies.assertSupported(dto.currency, 'currency');
+    }
+
     const updatedRoom = await this.roomModel
       .findOneAndUpdate(
         {
@@ -200,6 +210,8 @@ export class HotelsService {
         'You can only add rooms to the hotel assigned to your account',
       );
     }
+
+    dto.currency = await this.currencies.assertSupported(dto.currency, 'currency');
 
     const hotel = await this.hotelModel.findById(normalizedHotelId).exec();
 

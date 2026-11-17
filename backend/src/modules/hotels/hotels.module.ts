@@ -8,6 +8,7 @@ import { Hotel, HotelSchema } from './schemas/hotel.schema';
 import { Room, RoomSchema } from './schemas/room.schema';
 import { HotelBookingsModule } from '../hotel-bookings/hotel-bookings.module';
 import { Review, ReviewSchema } from './schemas/review.schema';
+import { ReferenceDataModule } from '../reference-data/reference-data.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { Review, ReviewSchema } from './schemas/review.schema';
       { name: Review.name, schema: ReviewSchema },
     ]),
     HotelBookingsModule,
+    ReferenceDataModule,
   ],
   controllers: [HotelsController],
   providers: [HotelsService],

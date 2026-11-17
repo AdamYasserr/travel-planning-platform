@@ -34,21 +34,13 @@ export class Hotel {
   @Prop({ type: String, required: true, trim: true })
   address: string;
 
-  @Prop({
-    type: MongooseSchema.Types.ObjectId,
-    ref: 'City',
-    required: true,
-    index: true,
-  })
-  cityId: Types.ObjectId;
+  /** Dataset city_id, e.g. "cairo" */
+  @Prop({ type: String, required: true, trim: true, index: true })
+  cityId: string;
 
-  @Prop({
-    type: MongooseSchema.Types.ObjectId,
-    ref: 'Country',
-    required: true,
-    index: true,
-  })
-  countryId: Types.ObjectId;
+  /** Dataset country code, e.g. "EG" */
+  @Prop({ type: String, required: true, trim: true, uppercase: true, index: true })
+  countryId: string;
 
   @Prop({ type: String, default: '', trim: true })
   description: string;
