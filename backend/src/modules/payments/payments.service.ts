@@ -16,6 +16,7 @@ import Stripe from 'stripe';
 
 import { StripeService } from '../../integrations/stripe/stripe.service';
 import { assertBookingTransition } from '../../common/booking/booking-status';
+import { runBookingTransaction } from '../../common/booking/booking-transaction';
 import {
   FlightBooking,
 } from '../flight-bookings/schemas/flight-booking.schema';
@@ -47,6 +48,13 @@ const DAY_MS = 86_400_000;
 
 type OwnedBooking = (HotelBooking | FlightBooking) & {
   _id: Types.ObjectId;
+};
+
+export type FlightCancellationResult = {
+  cancelledBookings: { bookingId: string; userId: string; refundId: string | null }[];
+  expiredHolds: { bookingId: string; userId: string }[];
+  refundIds: string[];
+  intentsToCancel: string[];
 };
 
 type CancellationResult = {
@@ -657,6 +665,80 @@ export class PaymentsService {
   @Cron(CronExpression.EVERY_5_MINUTES)
   async retryPendingRefunds() {
     return this.refunds.retryPending();
+  }
+
+  /**
+   * FLT-06: cancels a flight and everything booked on it, in ONE transaction (all or nothing):
+   * `markFlightCancelled` flips the flight to Cancelled (the caller owns the Flight model), Pending
+   * Payment holds become Expired (seats released, their payments Expired), Confirmed bookings become
+   * Cancelled with a 100% refund each (PAY-03). Completed bookings are not touched. After the commit the
+   * open PaymentIntents are cancelled and the refunds are sent to Stripe.
+   */
+  async cancelFlight(
+    flightId: Types.ObjectId,
+    markFlightCancelled: (session: ClientSession) => Promise<boolean>,
+  ): Promise<FlightCancellationResult> {
+    const now = new Date();
+    const result = await runBookingTransaction(this.connection, async (session) => {
+      if (!(await markFlightCancelled(session))) {
+        throw new ConflictException('Flight is already cancelled or can no longer be cancelled');
+      }
+      const outcome: FlightCancellationResult = { cancelledBookings: [], expiredHolds: [], refundIds: [], intentsToCancel: [] };
+
+      const holds = await this.flightBookingModel
+        .find({ flightId, status: FlightBookingStatus.PENDING_PAYMENT })
+        .session(session)
+        .exec();
+      for (const hold of holds) {
+        await this.expireBookingInTransaction(PaymentBookingType.FLIGHT, hold._id, now, session, true);
+        const payment = await this.paymentModel.findOne({ bookingType: PaymentBookingType.FLIGHT, bookingId: hold._id }).session(session).exec();
+        if (payment && (payment.status === PaymentStatus.PENDING || payment.status === PaymentStatus.FAILED)) {
+          if (payment.stripePaymentIntentId) outcome.intentsToCancel.push(payment.stripePaymentIntentId);
+          payment.status = PaymentStatus.EXPIRED;
+          await this.persistPayment(payment, session);
+        }
+        outcome.expiredHolds.push({ bookingId: String(hold._id), userId: String(hold.userId) });
+      }
+
+      const confirmed = await this.flightBookingModel
+        .find({ flightId, status: FlightBookingStatus.CONFIRMED })
+        .session(session)
+        .exec();
+      for (const booking of confirmed) {
+        const cancelled = await this.updateBookingStatus(
+          PaymentBookingType.FLIGHT,
+          booking._id as Types.ObjectId,
+          String(booking.userId),
+          FlightBookingStatus.CONFIRMED,
+          FlightBookingStatus.CANCELLED,
+          now,
+          session,
+        );
+        if (!cancelled) throw new ConflictException('A booking on this flight changed while it was being cancelled');
+        await this.releaseFlightSeats(booking, session);
+        const payment = await this.paymentModel.findOne({ bookingType: PaymentBookingType.FLIGHT, bookingId: booking._id }).session(session).exec();
+        let refundId: string | null = null;
+        if (payment?.status === PaymentStatus.SUCCEEDED) {
+          const refund = await this.refunds.createInTransaction(
+            payment,
+            { paidMinor: payment.amountMinor, percentage: 100, reason: RefundReason.FLIGHT_CANCELLED },
+            session,
+          );
+          if (refund) {
+            refundId = String(refund._id);
+            outcome.refundIds.push(refundId);
+          }
+        } else {
+          this.logger.error(`Confirmed flight booking ${String(booking._id)} has no successful payment; cancelled without a refund`);
+        }
+        outcome.cancelledBookings.push({ bookingId: String(booking._id), userId: String(booking.userId), refundId });
+      }
+      return outcome;
+    });
+
+    for (const intentId of result.intentsToCancel) await this.releaseStripePayment(intentId);
+    for (const refundId of result.refundIds) await this.refunds.process(refundId);
+    return result;
   }
 
   async expireFlightHoldsForInventory(inventoryId: Types.ObjectId) {

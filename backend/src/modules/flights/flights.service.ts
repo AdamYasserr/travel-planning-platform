@@ -20,6 +20,7 @@ import { UserRole } from '../../common/enums/user-role.enum';
 import { Airport } from '../airports/schemas/airport.schema';
 import { ReferenceValidationService } from '../reference-data/reference-validation.service';
 import { isValidIanaTimeZone, parseFlightInstant } from './timezone.util';
+import { PaymentsService } from '../payments/payments.service';
 
 import {
   CreateFlightDto,
@@ -42,6 +43,8 @@ export class FlightsService {
 private readonly airportModel: Model<Airport>,
 
     private readonly references: ReferenceValidationService,
+
+    private readonly payments: PaymentsService,
   ) {}
 
   // Check airline management permission
@@ -309,12 +312,25 @@ return this.toLocalFlightResponse(flight);
       );
     }
 
-    // Booking integration is not yet implemented.
-    // Fail closed until Ahmed's booking service can verify
-    // active reservations and coordinate refunds/notifications.
-    throw new ConflictException(
-      'Flight cancellation is unavailable until booking impact checks are integrated',
-    );
+    // FLT-06: the flight, its holds and its Confirmed bookings change together or not at all.
+    const result = await this.payments.cancelFlight(flight._id, async (session) => {
+      const updated = await this.flightModel
+        .findOneAndUpdate(
+          { _id: flight._id, status: FlightStatus.SCHEDULED, departureTime: { $gt: new Date() } },
+          { $set: { status: FlightStatus.CANCELLED } },
+          { session, new: true },
+        )
+        .exec();
+      return !!updated;
+    });
+
+    const cancelled = await this.flightModel.findById(flight._id).exec();
+    return {
+      flight: await this.toLocalFlightResponse(cancelled!),
+      cancelledBookings: result.cancelledBookings.length,
+      expiredHolds: result.expiredHolds.length,
+      refunds: result.refundIds.length,
+    };
   }
 
   async toLocalFlightResponse(flight: HydratedDocument<Flight>) {

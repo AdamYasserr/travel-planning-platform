@@ -1,5 +1,6 @@
 
 import {
+  HttpCode,
   Controller,
   Post,
   Patch,
@@ -104,7 +105,12 @@ export class FlightsController {
   @Post(':id/cancel')
   @Roles(UserRole.ADMIN, UserRole.MODERATOR)
   @ApiCookieAuth('access_token')
-  @ApiOperation({ summary: 'Cancel a flight' })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Cancel a flight (its airline moderator or an admin)',
+    description:
+      'FLT-06. In one transaction: the flight becomes Cancelled (hidden from search, no longer bookable), Pending Payment holds on it are expired and their seats released, and every Confirmed booking becomes Cancelled with a 100% refund (PAY-03). Completed bookings are not touched. 409 when the flight is already cancelled or has departed; 403 for another airline.',
+  })
   async cancel(
     @Param('id') id: string,
     @Req() request: AuthenticatedRequest,

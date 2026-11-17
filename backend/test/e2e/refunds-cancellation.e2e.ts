@@ -207,4 +207,79 @@ describe('refunds, cancellation, notifications and e-tickets (PAY-03, FLT-06, GE
       expect(stripeCallsFor(paymentId)).toBe(1);
     });
   });
+  describe('flight cancellation by the airline (FLT-06)', () => {
+    /** A flight with: two Confirmed bookings, one open hold with a payment, one Completed booking. */
+    async function bookedFlight() {
+      const fixture = await createAirlineWithFlight(ctx, { seats: 10, price: 5000 });
+      const [a, b, c, d] = [await createUser(ctx), await createUser(ctx), await createUser(ctx), await createUser(ctx)];
+      const holdA = await holdFlight(a, { flightId: fixture.flightId });
+      const holdB = await holdFlight(b, { flightId: fixture.flightId, passengers: 2 });
+      const holdC = await holdFlight(c, { flightId: fixture.flightId });
+      const holdD = await holdFlight(d, { flightId: fixture.flightId });
+      const payA = await confirmBooking(ctx, a, 'flight', holdA.body._id);
+      const payB = await confirmBooking(ctx, b, 'flight', holdB.body._id);
+      const payC = await startPayment(c, 'flight', holdC.body._id);
+      const payD = await confirmBooking(ctx, d, 'flight', holdD.body._id);
+      await model('FlightBooking').updateOne({ _id: holdD.body._id }, { $set: { status: 'Completed' } });
+      return { ...fixture, a, b, c, d, holdA, holdB, holdC, holdD, payA, payB, payC, payD };
+    }
+    const seatsLeft = async (flightId: string) => ((await model('CabinInventory').findOne({ flightId }).lean()) as any).availableSeats;
+
+    it('cancels the flight, refunds every Confirmed booking 100%, expires holds and leaves Completed ones alone', async () => {
+      const f = await bookedFlight();
+      const res = await f.moderator.agent.post(`/api/flights/${f.flightId}/cancel`);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ cancelledBookings: 2, expiredHolds: 1, refunds: 2 });
+      expect(res.body.flight.status).toBe('Cancelled');
+
+      for (const [user, hold, paymentId, minor] of [[f.a, f.holdA, f.payA, 500000], [f.b, f.holdB, f.payB, 1000000]] as const) {
+        expect((await user.agent.get(`/api/flight-bookings/${hold.body._id}`)).body.status).toBe('Cancelled');
+        const payment = (await user.agent.get(`/api/payments/${paymentId}`)).body;
+        expect(payment.status).toBe('Refunded');
+        expect((await refundOf(user, payment.refundId)).body).toMatchObject({ percentage: 100, amountMinor: minor, reason: 'flight_cancelled', status: 'Refunded' });
+        expect(stripeCallsFor(paymentId)).toBe(1);
+      }
+      expect((await f.c.agent.get(`/api/flight-bookings/${f.holdC.body._id}`)).body.status).toBe('Expired');
+      expect(ctx.stripe.cancelledIntents).toContain(intentIdOf(ctx, f.payC.body));
+      expect((await f.c.agent.get(`/api/payments/${f.payC.body.paymentId}`)).body.status).toBe('Expired');
+      expect((await f.d.agent.get(`/api/flight-bookings/${f.holdD.body._id}`)).body.status).toBe('Completed');
+      expect(stripeCallsFor(f.payD)).toBe(0);
+    });
+
+    it('a cancelled flight disappears from search and cannot be booked', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 4, departInDays: 45 });
+      const search = () => ctx.http().get('/api/flights/search').query({ origin: 'CAI', destination: 'DXB', departureDate: day(45), limit: 100 });
+      expect(JSON.stringify((await search()).body)).toContain(f.flightId);
+      expect((await f.moderator.agent.post(`/api/flights/${f.flightId}/cancel`)).status).toBe(200);
+      expect(JSON.stringify((await search()).body)).not.toContain(f.flightId);
+      expect((await holdFlight(await createUser(ctx), { flightId: f.flightId })).status).toBe(409);
+    });
+
+    it('cancelling again is 409 and creates no second refund', async () => {
+      const f = await bookedFlight();
+      expect((await f.moderator.agent.post(`/api/flights/${f.flightId}/cancel`)).status).toBe(200);
+      expect((await f.moderator.agent.post(`/api/flights/${f.flightId}/cancel`)).status).toBe(409);
+      expect(stripeCallsFor(f.payA)).toBe(1);
+      expect(await model('Refund').countDocuments({ paymentId: f.payA })).toBe(1);
+    });
+
+    it('only the airline\'s moderator or an admin may cancel; others are 403 and change nothing', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 4 });
+      const other = await createAirlineWithFlight(ctx, { seats: 4 });
+      expect((await other.moderator.agent.post(`/api/flights/${f.flightId}/cancel`)).status).toBe(403);
+      expect((await (await createUser(ctx)).agent.post(`/api/flights/${f.flightId}/cancel`)).status).toBe(403);
+      expect((await ctx.http().post(`/api/flights/${f.flightId}/cancel`)).status).toBe(401);
+      expect((await f.moderator.agent.post('/api/flights/not-an-id/cancel')).status).toBe(400);
+      expect(((await model('Flight').findById(f.flightId).lean()) as any).status).toBe('Scheduled');
+      expect((await (await createUser(ctx, 'admin')).agent.post(`/api/flights/${f.flightId}/cancel`)).status).toBe(200);
+    });
+
+    it('seats of the cancelled bookings and holds are released', async () => {
+      const f = await bookedFlight();
+      const before = await seatsLeft(f.flightId);
+      await f.moderator.agent.post(`/api/flights/${f.flightId}/cancel`);
+      // A (1), B (2) and the hold C (1) give their seats back; the Completed booking keeps its seat.
+      expect(await seatsLeft(f.flightId)).toBe(before + 4);
+    });
+  });
 });

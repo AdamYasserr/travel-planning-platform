@@ -35,11 +35,13 @@ import { CancellationPolicy, CancellationPolicySchema } from '../airlines/schema
 import { City, CitySchema } from '../reference-data/schemas/city.schema';
 import { FlightBookingsModule } from '../flight-bookings/flight-bookings.module';
 import { ReferenceDataModule } from '../reference-data/reference-data.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
     FlightBookingsModule,
     ReferenceDataModule,
+    PaymentsModule,
     MongooseModule.forFeature([
       {
         name: Flight.name,
