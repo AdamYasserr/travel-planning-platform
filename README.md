@@ -69,6 +69,7 @@ Configure the required environment variables, including:
 - JWT configuration
 - Cookie configuration
 - Other required external service credentials
+- `PLATFORM_CURRENCY` (default `USD`): the one currency of every room rate, cabin fare and payment (PAY-04)
 
 Never commit `.env` or expose credentials in the repository.
 
@@ -159,6 +160,34 @@ and `GET /api/refunds/:id`. A refund is not a separate record yet: its id is the
 
 `GET /api/hotels/:id/rooms/available` (the public room search) is intentionally not part of this change.
 
+### Payments, policies and the platform currency (PAY-01, PAY-02, PAY-04)
+
+**Flow** (the same for hotel and flight bookings, `:type` is `hotel` or `flight`):
+
+1. Create a hold (`POST /api/hotel-bookings` or `POST /api/flight-bookings`). `policiesAccepted: true` there records `policiesAcceptedAt`; leaving it out creates the booking unaccepted.
+2. `GET /api/bookings/:type/:id/policies` shows the provider policies: hotel cancellation tiers and check-in/check-out times; flight cancellation tiers and the baggage policy. They are **snapshotted on the booking** at creation, so what the user accepts cannot change later. Owner only (another user's booking is 404).
+3. `POST /api/bookings/:type/:id/accept-policies` with body `{ "accepted": true }` stores `policiesAcceptedAt` (a second call keeps the first timestamp). Payment is blocked (409) until then.
+4. `POST /api/payments` with `{ "bookingType": "hotel" | "flight", "bookingId": "..." }` creates a Stripe **PaymentIntent** and returns `{ paymentId, clientSecret, amount, amountMinor, currency }`. `amount` is in major units (`4500.5`), `amountMinor` in Stripe's minor units (`450050`). The amount and currency always come from the **booking**, never from the client. The browser passes `clientSecret` to Stripe Elements, so card details never reach this backend. Only the PaymentIntent id, amount, currency and status are stored; the client secret is never stored or logged.
+5. **The booking is confirmed only by Stripe's signed webhook** (`POST /api/payments/webhook`, `payment_intent.succeeded`). The handler checks the signature on the raw body, is idempotent per Stripe event id, and confirms only if the PaymentIntent is the one we created, its amount and currency equal the booking's, and the booking is still Pending Payment with a valid hold. Anything else is **not** confirmed: it is logged (ids only) and, because the money was taken, the payment is flagged Refund Pending for the existing refund path. A success that arrives after the hold expired therefore never confirms an Expired booking. `payment_intent.payment_failed` marks the payment Failed and leaves the booking Pending Payment.
+6. After a failed attempt, `POST /api/payments/:id/retry` lets the user try again until the hold expires (same PaymentIntent while Stripe says it is still usable, otherwise a new one). When a hold expires, or an unpaid booking is cancelled, its PaymentIntent is cancelled.
+7. `GET /api/payments/:id` shows the status (owner only).
+
+State conflicts (policies not accepted, hold expired, booking not Pending Payment) are `409`; malformed input is `400`.
+
+**Receiving webhooks locally.** Stripe cannot reach `localhost`, so forward events with the Stripe CLI (test mode):
+
+```bash
+stripe listen --forward-to localhost:3000/api/payments/webhook
+```
+
+It prints a signing secret that starts with `whsec_`. Put it in `backend/.env` as `STRIPE_WEBHOOK_SECRET=whsec_...` (together with your `sk_test_...` key as `STRIPE_SECRET_KEY`) and restart the backend. Without it the webhook answers 400/503 and no booking is ever confirmed.
+
+**Paying from Swagger (test mode only).** Nobody can type a card into Stripe Elements in Swagger, so `POST /api/payments/:id/test-confirm` confirms the PaymentIntent on the server with Stripe's test card `pm_card_visa` (body `{ "outcome": "decline" }` uses `pm_card_chargeDeclined` to simulate a failure). It does **not** confirm the booking: that still happens only when the signed webhook arrives, exactly like a real payment, so keep `stripe listen` running. It answers 404 unless `STRIPE_SECRET_KEY` starts with `sk_test_` **and** `NODE_ENV` is not `production` (and boot validation already refuses any Stripe key that is not a test key). Demo order: hold, `GET policies`, `accept-policies`, `POST /payments`, `test-confirm`, then `GET /payments/:id` and the booking.
+
+**One platform currency (PAY-04).** `PLATFORM_CURRENCY` (default `USD`). Room and cabin creation and update take an optional `currency`: omitted means the platform currency, and any other value is a 400 on the `currency` field (`currency must be USD`). A booking priced in another currency (data created before this rule) cannot be paid (409). Rooms and cabins already stored in another currency, for example older demo data in EGP, must be recreated in the platform currency before they can be paid.
+
+Known gap: the airline **baggage policy** has its own `currency` (price of an extra bag); it is not restricted to the platform currency yet.
+
 ### Authentication cookies and `COOKIE_SECURE`
 
 Auth tokens are only ever sent as `httpOnly` cookies (never in a response body). Cookie flags:
@@ -244,13 +273,13 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 
 | Mocked | Where | Why |
 | --- | --- | --- |
-| Stripe (`StripeService`) | `test/e2e/helpers/fakes.ts` (`StripeFake`) | no network; records session/refund calls; accepts only the signature `valid` |
+| Stripe (`StripeService`) | `test/e2e/helpers/fakes.ts` (`StripeFake`) | no network; models PaymentIntents (create, retrieve, cancel, confirm), records refunds; builds `payment_intent.*` events; accepts only the signature `valid` |
 | Exchange rates (`FxRatesService`) | `test/e2e/helpers/fakes.ts` (`FxFake`) | fixed rates |
 | Throttle counter (`ThrottlerStorage`) | `test/e2e/helpers/app.ts` | 100 requests/minute would break lockout and concurrency tests. The real guard still runs |
 
-**Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: open a payment, then post a fake-signed webhook event to `POST /api/payments/webhook`. All Stripe event details live in that helper and in `StripeFake`; if payments move to PaymentIntents, change those two places, not the tests.
+**Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: accept the policies, open a payment (`POST /api/payments`), then post a fake-signed `payment_intent.succeeded` event to `POST /api/payments/webhook`. Stripe event details live in that helper and in `StripeFake`; `payments.e2e.ts` also builds failure, wrong-amount and late events through the fake.
 
-**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`); shared helpers in `test/e2e/helpers/`:
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`); shared helpers in `test/e2e/helpers/`:
 
 | Helper | Purpose |
 | --- | --- |
@@ -260,7 +289,7 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 | `createHotelWithRooms(ctx, opts)` | hotel via the admin API, hotel moderator, rooms, availability range |
 | `createAirlineWithFlight(ctx, opts)` | airline, airline moderator, a future CAI to DXB flight and an Economy cabin (call `seedReference` first) |
 | `seedReference(ctx)` | runs the real CSV importer on `backend/data/reference` |
-| `holdHotel`, `holdFlight`, `startPayment`, `confirmBooking` | booking helpers; `day(n)` gives a date `n` days from today |
+| `holdHotel`, `holdFlight`, `acceptPolicies`, `startPayment`, `sendWebhook`, `confirmBooking` | booking helpers; `day(n)` gives a date `n` days from today |
 
 **Adding the next feature's tests**
 
