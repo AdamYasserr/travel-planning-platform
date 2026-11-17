@@ -20,7 +20,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:integration": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.integration.config.ts",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.e2e.config.ts",
     "seed:reference": "ts-node -r dotenv/config -r tsconfig-paths/register src/database/seeders/reference-data.seeder.ts"
   },
   "dependencies": {
