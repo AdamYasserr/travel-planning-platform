@@ -412,4 +412,63 @@ describe('refunds, cancellation, notifications and e-tickets (PAY-03, FLT-06, GE
       expect((await ctx.http().patch('/api/notifications/read-all')).status).toBe(401);
     });
   });
+  describe('e-ticket PDF (FLT-23)', () => {
+    /** supertest: keep the PDF as bytes. */
+    const binary = (res: any, cb: (err: Error | null, body: Buffer) => void) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    };
+    const ticket = (agent: any, id: string) => agent.get(`/api/bookings/${id}/e-ticket`).buffer(true).parse(binary);
+
+    async function confirmedFlight() {
+      const f = await createAirlineWithFlight(ctx, { seats: 4 });
+      const user = await createUser(ctx);
+      const hold = await holdFlight(user, { flightId: f.flightId, passengers: 2 });
+      await confirmBooking(ctx, user, 'flight', hold.body._id);
+      return { ...f, user, bookingId: String(hold.body._id), hold };
+    }
+
+    it('the owner downloads a PDF attachment for a Confirmed booking', async () => {
+      const { user, bookingId, hold } = await confirmedFlight();
+      const res = await ticket(user.agent, bookingId);
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/^application\/pdf/);
+      expect(res.headers['content-disposition']).toBe(`attachment; filename="e-ticket-${hold.body.reference}.pdf"`);
+      expect(Buffer.isBuffer(res.body)).toBe(true);
+      expect(res.body.subarray(0, 5).toString()).toBe('%PDF-');
+      expect(res.body.length).toBeGreaterThan(1000);
+    });
+
+    it('a Completed booking still has its ticket, and an admin may download any', async () => {
+      const { user, bookingId } = await confirmedFlight();
+      await model('FlightBooking').updateOne({ _id: bookingId }, { $set: { status: 'Completed' } });
+      expect((await ticket(user.agent, bookingId)).status).toBe(200);
+      expect((await ticket((await createUser(ctx, 'admin')).agent, bookingId)).status).toBe(200);
+    });
+
+    it('is 409 for a booking that is Pending Payment, Expired or Cancelled', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 6 });
+      const user = await createUser(ctx);
+      const pending = await holdFlight(user, { flightId: f.flightId });
+      expect((await ticket(user.agent, pending.body._id)).status).toBe(409);
+      const lapsed = await holdFlight(user, { flightId: f.flightId });
+      await model('FlightBooking').updateOne({ _id: lapsed.body._id }, { $set: { status: 'Expired' } });
+      expect((await ticket(user.agent, lapsed.body._id)).status).toBe(409);
+      const { user: owner, bookingId } = await confirmedFlight();
+      await model('FlightBooking').updateOne({ _id: bookingId }, { $set: { status: 'Cancelled' } });
+      expect((await ticket(owner.agent, bookingId)).status).toBe(409);
+    });
+
+    it("another user's booking and a hotel booking are 404; signed out is 401; a bad id is 400", async () => {
+      const { bookingId } = await confirmedFlight();
+      const stranger = await createUser(ctx);
+      expect((await ticket(stranger.agent, bookingId)).status).toBe(404);
+      expect((await ticket((await createUser(ctx, 'moderator')).agent, bookingId)).status).toBe(404);
+      const hotel = await paidHotel();
+      expect((await ticket(hotel.user.agent, hotel.bookingId)).status).toBe(404);
+      expect((await ctx.http().get(`/api/bookings/${bookingId}/e-ticket`)).status).toBe(401);
+      expect((await stranger.agent.get('/api/bookings/not-an-id/e-ticket')).status).toBe(400);
+    });
+  });
 });
