@@ -27,6 +27,7 @@ import { DeactivateAccountDto } from './dto/deactivate-account.dto';
 import { UpdateProfileDto } from '../users/dto/update-profile.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { AllowPasswordChange } from '../common/decorators/allow-password-change.decorator';
+import { ACCESS_COOKIE, REFRESH_COOKIE, clearAuthCookies, setAuthCookies } from '../common/auth/auth-cookies';
 
 interface AuthenticatedRequest extends Request {
   user: {
@@ -44,44 +45,15 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
-  private getCookieOptions(maxAge: number) {
-    const secure =
-      this.configService.get<boolean>('auth.cookieSecure') ?? false;
-
-    const domain = this.configService.get<string>('auth.cookieDomain');
-
-    return {
-      httpOnly: true,
-      secure,
-      sameSite: secure ? ('none' as const) : ('lax' as const),
-      maxAge,
-      path: '/',
-      ...(domain ? { domain } : {}),
-    };
-  }
-
-  private clearAuthCookies(response: Response) {
-    const { maxAge, ...options } = this.getCookieOptions(0);
-
-    response.clearCookie('access_token', options);
-    response.clearCookie('refresh_token', options);
-  }
-
   private setAuthCookies(
     response: Response,
     tokens: { accessToken: string; refreshToken: string },
   ) {
-    response.cookie(
-      'access_token',
-      tokens.accessToken,
-      this.getCookieOptions(15 * 60 * 1000),
-    );
+    setAuthCookies(this.configService, response, tokens);
+  }
 
-    response.cookie(
-      'refresh_token',
-      tokens.refreshToken,
-      this.getCookieOptions(7 * 24 * 60 * 60 * 1000),
-    );
+  private clearAuthCookies(response: Response) {
+    clearAuthCookies(this.configService, response);
   }
 
   @Public()
@@ -124,7 +96,7 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const refreshToken = request.cookies?.refresh_token;
+    const refreshToken = request.cookies?.[REFRESH_COOKIE];
 
     const result = await this.authService.refreshSession(refreshToken);
 
@@ -144,7 +116,10 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    await this.authService.logout(request.cookies?.refresh_token);
+    await this.authService.logout(
+      request.cookies?.[REFRESH_COOKIE],
+      request.cookies?.[ACCESS_COOKIE],
+    );
 
     this.clearAuthCookies(response);
 
@@ -178,6 +153,8 @@ export class AuthController {
     return result;
   }
 
+  // Allowed while a temporary password is pending so the client can read mustChangePassword.
+  @AllowPasswordChange()
   @Get('me')
   @ApiCookieAuth('access_token')
   @ApiOperation({ summary: 'Get the authenticated user profile' })
@@ -191,8 +168,9 @@ export class AuthController {
 
   @AllowPasswordChange()
   @Post('change-password')
+  @Patch('change-password')
   @ApiCookieAuth('access_token')
-  @ApiOperation({ summary: 'Change the authenticated user password' })
+  @ApiOperation({ summary: 'Change the authenticated user password (POST and PATCH are equivalent)' })
   @ApiBody({ type: ChangePasswordDto })
   @ApiResponse({ status: 201, description: 'Password changed and sessions cleared.' })
   @ApiResponse({ status: 400, description: 'Invalid password input.' })

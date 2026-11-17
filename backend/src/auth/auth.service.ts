@@ -1,16 +1,17 @@
-
 import {
   Injectable,
   ConflictException,
+  ForbiddenException,
+  HttpException,
   InternalServerErrorException,
   UnauthorizedException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Model } from 'mongoose';
 import * as bcrypt from 'bcryptjs';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { SignOptions } from 'jsonwebtoken';
 
 import { User, UserDocument } from '../users/user.schema';
@@ -19,6 +20,7 @@ import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from '../users/dto/update-profile.dto';
 import { UsersService } from '../modules/users/users.service';
+import { IDLE_TIMEOUT_MS, LOCK_TIME_MS, MAX_LOGIN_ATTEMPTS } from './auth.constants';
 
 interface TokenPayload {
   sub: string;
@@ -26,12 +28,24 @@ interface TokenPayload {
   role: string;
 }
 
+
+const INVALID_CREDENTIALS = 'Invalid email or password';
+// Used to keep response time similar when the email does not exist.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password-0', 12);
+
+/** Refresh tokens are long JWTs: bcrypt would only see their first 72 bytes, so store a SHA-256 instead. */
+export function hashRefreshToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function tokenMatchesHash(token: string, storedHash: string): boolean {
+  const a = Buffer.from(hashRefreshToken(token), 'hex');
+  const b = Buffer.from(storedHash, 'hex');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 @Injectable()
 export class AuthService {
-  private readonly MAX_LOGIN_ATTEMPTS = 5;
-  private readonly LOCK_TIME = 15 * 60 * 1000;
-  private readonly IDLE_TIMEOUT = 30 * 60 * 1000;
-
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
@@ -46,7 +60,7 @@ export class AuthService {
     const existingUser = await this.userModel.findOne({ email });
 
     if (existingUser) {
-      throw new ConflictException('Email is already registered');
+      throw this.emailTaken();
     }
 
     const hashedPassword = await bcrypt.hash(registerDto.password, 12);
@@ -69,7 +83,7 @@ export class AuthService {
         'code' in error &&
         error.code === 11000
       ) {
-        throw new ConflictException('Email is already registered');
+        throw this.emailTaken();
       }
 
       throw new InternalServerErrorException('Could not create account');
@@ -84,55 +98,53 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const email = loginDto.email.trim().toLowerCase();
 
-    const user = await this.userModel
-      .findOne({ email })
-      .select('+password');
+    const user = await this.userModel.findOne({ email }).select('+password');
 
-    if (!user) {
-      throw new UnauthorizedException('Invalid email or password');
+    // Unknown or deactivated accounts get the same generic answer as a wrong password.
+    if (!user || !user.isActive || user.deactivatedAt) {
+      await bcrypt.compare(loginDto.password, user?.password ?? DUMMY_HASH);
+      throw new UnauthorizedException(INVALID_CREDENTIALS);
     }
 
-    if (!user.isActive || user.isSuspended || user.deactivatedAt) {
-      throw new ForbiddenException('This account is unavailable');
+    const now = new Date();
+
+    if (user.lockUntil && user.lockUntil.getTime() > now.getTime()) {
+      throw this.locked(user.lockUntil);
     }
 
-    if (user.lockUntil && user.lockUntil.getTime() > Date.now()) {
-      throw new UnauthorizedException(
-        'Account temporarily locked. Try again later.',
+    // An expired lock starts a fresh count (atomic, only if the lock is still the expired one).
+    if (user.lockUntil) {
+      await this.userModel.updateOne(
+        { _id: user._id, lockUntil: { $lte: now } },
+        { $set: { failedLoginAttempts: 0, lockUntil: null } },
       );
     }
 
-    if (user.lockUntil && user.lockUntil.getTime() <= Date.now()) {
-      user.failedLoginAttempts = 0;
-      user.lockUntil = null;
-    }
-
-    const passwordMatches = await bcrypt.compare(
-      loginDto.password,
-      user.password,
-    );
+    const passwordMatches = await bcrypt.compare(loginDto.password, user.password);
 
     if (!passwordMatches) {
-      user.failedLoginAttempts += 1;
-
-      if (user.failedLoginAttempts >= this.MAX_LOGIN_ATTEMPTS) {
-        user.lockUntil = new Date(Date.now() + this.LOCK_TIME);
-      }
-
-      await user.save();
-
-      throw new UnauthorizedException('Invalid email or password');
+      throw await this.recordFailedAttempt(user._id.toString());
     }
 
-    user.failedLoginAttempts = 0;
-    user.lockUntil = null;
-    user.lastActivityAt = new Date();
+    // Suspension is only revealed to someone who proved they know the password.
+    if (user.isSuspended) {
+      throw new ForbiddenException('Your account has been suspended. Please contact support.');
+    }
 
     const tokens = await this.generateTokens(user);
 
-    user.refreshTokenHash = await bcrypt.hash(tokens.refreshToken, 12);
-
-    await user.save();
+    // A successful login resets the failure counter.
+    await this.userModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          failedLoginAttempts: 0,
+          lockUntil: null,
+          lastActivityAt: new Date(),
+          refreshTokenHash: hashRefreshToken(tokens.refreshToken),
+        },
+      },
+    );
 
     return {
       ...tokens,
@@ -160,7 +172,9 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    const user = await this.userModel.findById(payload.sub);
+    const user = await this.userModel
+      .findById(payload.sub)
+      .select('+refreshTokenHash');
 
     if (!user || !user.isActive || user.isSuspended || user.deactivatedAt) {
       throw new UnauthorizedException('Account is unavailable');
@@ -170,23 +184,14 @@ export class AuthService {
       throw new UnauthorizedException('Session has been revoked');
     }
 
-    const tokenMatches = await bcrypt.compare(
-      refreshToken,
-      user.refreshTokenHash,
-    );
-
-    if (!tokenMatches) {
+    if (!tokenMatchesHash(refreshToken, user.refreshTokenHash)) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
     const lastActivity = user.lastActivityAt?.getTime();
 
-    if (
-      !lastActivity ||
-      Date.now() - lastActivity >= this.IDLE_TIMEOUT
-    ) {
-      user.refreshTokenHash = null;
-      await user.save();
+    if (!lastActivity || Date.now() - lastActivity >= IDLE_TIMEOUT_MS) {
+      await this.userModel.updateOne({ _id: user._id }, { $set: { refreshTokenHash: null } });
 
       throw new UnauthorizedException(
         'Session expired due to inactivity. Please log in again.',
@@ -195,9 +200,14 @@ export class AuthService {
 
     const tokens = await this.generateTokens(user);
 
-    user.refreshTokenHash = await bcrypt.hash(tokens.refreshToken, 12);
-
-    await user.save();
+    // Rotation: only the newest refresh token is valid. Conditional so a replayed token cannot win a race.
+    const rotated = await this.userModel.updateOne(
+      { _id: user._id, refreshTokenHash: user.refreshTokenHash },
+      { $set: { refreshTokenHash: hashRefreshToken(tokens.refreshToken) } },
+    );
+    if (rotated.modifiedCount !== 1) {
+      throw new UnauthorizedException('Session has been revoked');
+    }
 
     return {
       ...tokens,
@@ -205,34 +215,17 @@ export class AuthService {
     };
   }
 
-  async logout(refreshToken?: string) {
-    if (refreshToken) {
-      try {
-        const payload = await this.jwtService.verifyAsync<TokenPayload>(
-          refreshToken,
-          {
-            secret: this.configService.getOrThrow<string>(
-              'auth.refreshTokenSecret',
-            ),
-          },
-        );
+  /**
+   * ACC-06: revokes the server-side session. Works with the refresh cookie, or with the access
+   * cookie (even if expired) when the refresh cookie is missing or no longer valid.
+   */
+  async logout(refreshToken?: string, accessToken?: string) {
+    const userId =
+      (await this.revocableUserId(refreshToken, 'refresh')) ??
+      (await this.revocableUserId(accessToken, 'access'));
 
-        const user = await this.userModel.findById(payload.sub);
-
-        if (user?.refreshTokenHash) {
-          const tokenMatches = await bcrypt.compare(
-            refreshToken,
-            user.refreshTokenHash,
-          );
-
-          if (tokenMatches) {
-            user.refreshTokenHash = null;
-            await user.save();
-          }
-        }
-      } catch {
-        // Invalid or expired tokens are still cleared from the browser.
-      }
+    if (userId) {
+      await this.userModel.updateOne({ _id: userId }, { $set: { refreshTokenHash: null } });
     }
 
     return { message: 'Logged out successfully' };
@@ -242,24 +235,9 @@ export class AuthService {
     return this.usersService.getProfile(userId);
   }
 
+  /** Kept for DELETE /api/auth/account; same rules as DELETE /api/users/me. */
   async deactivateAccount(userId: string) {
-    const user = await this.userModel.findById(userId);
-
-    if (!user || !user.isActive || user.deactivatedAt) {
-      throw new UnauthorizedException('Account is unavailable');
-    }
-
-    user.isActive = false;
-    user.deactivatedAt = new Date();
-    user.refreshTokenHash = null;
-    user.failedLoginAttempts = 0;
-    user.lockUntil = null;
-
-    await user.save();
-
-    return {
-      message: 'Account deactivated successfully',
-    };
+    return this.usersService.deactivateAccount(userId);
   }
 
   async changePassword(
@@ -319,6 +297,65 @@ export class AuthService {
     };
   }
 
+  private async recordFailedAttempt(userId: string): Promise<HttpException> {
+    const updated = await this.userModel.findOneAndUpdate(
+      { _id: userId },
+      { $inc: { failedLoginAttempts: 1 } },
+      { new: true },
+    );
+    if (!updated) return new UnauthorizedException(INVALID_CREDENTIALS);
+
+    if (updated.failedLoginAttempts >= MAX_LOGIN_ATTEMPTS) {
+      // Only the request that first reaches the limit sets the lock; later ones read it.
+      const locked = await this.userModel.findOneAndUpdate(
+        { _id: userId, lockUntil: null },
+        { $set: { lockUntil: new Date(Date.now() + LOCK_TIME_MS) } },
+        { new: true },
+      );
+      const lockUntil = locked?.lockUntil ?? (await this.userModel.findById(userId))?.lockUntil;
+      if (lockUntil) return this.locked(lockUntil);
+    }
+    return new UnauthorizedException(INVALID_CREDENTIALS);
+  }
+
+  private locked(lockedUntil: Date) {
+    return new HttpException(
+      {
+        statusCode: 423,
+        error: 'Locked',
+        message: `Too many failed login attempts. Your account is locked until ${lockedUntil.toISOString()}.`,
+        lockedUntil: lockedUntil.toISOString(),
+      },
+      423,
+    );
+  }
+
+  private emailTaken() {
+    return new ConflictException({
+      statusCode: 409,
+      error: 'Conflict',
+      message: 'Email is already registered',
+      errors: [{ field: 'email', messages: ['Email is already registered'] }],
+    });
+  }
+
+  private async revocableUserId(token: string | undefined, kind: 'refresh' | 'access'): Promise<string | null> {
+    if (!token) return null;
+    try {
+      const secret =
+        kind === 'refresh'
+          ? this.configService.getOrThrow<string>('auth.refreshTokenSecret')
+          : this.configService.getOrThrow<string>('auth.jwtSecret');
+      const payload = await this.jwtService.verifyAsync<TokenPayload>(token, {
+        secret,
+        ignoreExpiration: kind === 'access',
+      });
+      return payload.sub;
+    } catch {
+      return null;
+    }
+  }
+
   private async generateTokens(user: UserDocument) {
     const payload = {
       sub: user._id.toString(),
@@ -335,6 +372,7 @@ export class AuthService {
       expiresIn: (this.configService.get<string>(
         'auth.refreshTokenExpiresIn',
       ) ?? '7d') as SignOptions['expiresIn'],
+      jwtid: randomUUID(),
     });
 
     return { accessToken, refreshToken };

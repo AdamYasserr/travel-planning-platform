@@ -48,7 +48,8 @@ export class User {
   @Prop({ type: String, default: null })
   airlineId?: string | null;
 
-  @Prop({ type: String, default: null })
+  /** SHA-256 of the current refresh token (never exposed; select: false). */
+  @Prop({ type: String, default: null, select: false })
   refreshTokenHash?: string | null;
 
   @Prop({ type: Date, default: null })

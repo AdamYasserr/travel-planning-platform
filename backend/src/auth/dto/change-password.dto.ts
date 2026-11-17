@@ -5,6 +5,7 @@ import {
   Matches,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { BCRYPT_MAX_PASSWORD_BYTES, MaxBytes } from '../../common/validators/max-bytes.decorator';
 
 export class ChangePasswordDto {
   @ApiProperty({ description: 'Current account password' })
@@ -18,5 +19,6 @@ export class ChangePasswordDto {
   @Matches(/^(?=.*[A-Za-z])(?=.*\d).+$/, {
     message: 'Password must contain at least one letter and one number',
   })
+  @MaxBytes(BCRYPT_MAX_PASSWORD_BYTES)
   newPassword: string;
 }

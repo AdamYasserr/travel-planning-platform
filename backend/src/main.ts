@@ -1,11 +1,12 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 
 import { AppModule } from './app.module';
+import { createValidationPipe } from './common/pipes/validation.pipe';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -21,16 +22,16 @@ async function bootstrap() {
     credentials: true,
   });
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: {
-        enableImplicitConversion: true,
-      },
-    }),
-  );
+  app.useGlobalPipes(createValidationPipe());
+
+  if (
+    configService.get<string>('app.environment') === 'production' &&
+    !configService.get<boolean>('auth.cookieSecure')
+  ) {
+    new Logger('Bootstrap').warn(
+      'COOKIE_SECURE is off in production: auth cookies are not marked Secure. Set COOKIE_SECURE=true behind HTTPS.',
+    );
+  }
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Travel Planning Platform API')

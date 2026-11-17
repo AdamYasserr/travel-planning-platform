@@ -9,11 +9,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 
 import { User, UserDocument } from '../../users/user.schema';
+import { IDLE_TIMEOUT_MS } from '../auth.constants';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  private readonly IDLE_TIMEOUT = 30 * 60 * 1000;
-
   constructor(
     configService: ConfigService,
     @InjectModel(User.name)
@@ -47,17 +46,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const now = Date.now();
     const lastActivity = user.lastActivityAt?.getTime();
 
-    if (!lastActivity || now - lastActivity >= this.IDLE_TIMEOUT) {
-      user.refreshTokenHash = null;
-      await user.save();
+    if (!lastActivity || now - lastActivity >= IDLE_TIMEOUT_MS) {
+      await this.userModel.updateOne({ _id: user._id }, { $set: { refreshTokenHash: null } });
 
       throw new UnauthorizedException(
         'Session expired due to inactivity. Please log in again.',
       );
     }
 
-    user.lastActivityAt = new Date(now);
-    await user.save();
+    // Each authenticated request extends the idle window.
+    await this.userModel.updateOne({ _id: user._id }, { $set: { lastActivityAt: new Date(now) } });
 
     return {
       userId: user._id.toString(),

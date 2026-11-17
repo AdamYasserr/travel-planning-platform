@@ -16,7 +16,11 @@ export default () => ({
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
     refreshTokenSecret: process.env.REFRESH_TOKEN_SECRET,
     refreshTokenExpiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '7d',
-    cookieSecure: process.env.COOKIE_SECURE === 'true',
+    // Defaults to true in production; may be turned off explicitly (e.g. local demo over http).
+    cookieSecure:
+      process.env.COOKIE_SECURE !== undefined && process.env.COOKIE_SECURE !== ''
+        ? process.env.COOKIE_SECURE === 'true'
+        : process.env.NODE_ENV === 'production',
     cookieDomain: process.env.COOKIE_DOMAIN || undefined,
   },
   stripe: {

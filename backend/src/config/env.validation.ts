@@ -17,10 +17,8 @@ export const envValidationSchema = Joi.object({
   REFRESH_TOKEN_SECRET: Joi.string().min(32).required(),
   REFRESH_TOKEN_EXPIRES_IN: Joi.string().default('7d'),
 
-  COOKIE_SECURE: Joi.boolean()
-    .truthy('true')
-    .falsy('false')
-    .default(false),
+  // Optional: when unset it defaults to true in production and false otherwise (see configuration.ts).
+  COOKIE_SECURE: Joi.boolean().truthy('true').falsy('false').optional(),
   COOKIE_DOMAIN: Joi.string().optional().allow(''),
 
   STRIPE_SECRET_KEY: Joi.string()
