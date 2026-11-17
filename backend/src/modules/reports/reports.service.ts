@@ -13,6 +13,7 @@ import { Report, ReportDocument } from './schemas/report.schema';
 import { Post } from '../blog/schemas/post.schema';
 import { Comment } from '../blog/schemas/comment.schema';
 import { Review } from '../hotels/schemas/review.schema';
+import { HotelsService } from '../hotels/hotels.service';
 import { Itinerary } from '../itineraries/schemas/itinerary.schema';
 import { BlogService } from '../blog/blog.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -32,6 +33,7 @@ export class ReportsService {
     @InjectModel(Itinerary.name) private readonly itineraryModel: Model<any>,
     private readonly blog: BlogService,
     private readonly auditLogs: AuditLogsService,
+    private readonly hotels: HotelsService,
   ) {}
 
   async createReport(reporterId: string, dto: CreateReportDto) {
@@ -198,6 +200,8 @@ export class ReportsService {
               .exec()
           : await this.reviewModel.findByIdAndDelete(targetObjectId).exec();
       if (!target) throw new NotFoundException('Review not found');
+      // HTL-23: a hidden or deleted review no longer counts towards the hotel's rating.
+      await this.hotels.refreshRating(target.hotelId);
       await this.auditLogs.record(
         actorId,
         `community.review.${action === 'hide' ? 'hidden' : 'deleted'}`,

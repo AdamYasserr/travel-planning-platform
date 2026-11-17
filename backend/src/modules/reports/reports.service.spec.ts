@@ -86,6 +86,7 @@ describe('ReportsService', () => {
       itineraryModel as never,
       blog as never,
       audit as never,
+      { refreshRating: jest.fn(async () => undefined) } as never,
     );
   });
 

@@ -1,3 +1,4 @@
+import { HotelsModule } from '../hotels/hotels.module';
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
@@ -19,6 +20,7 @@ import {
   imports: [
     BlogModule,
     AuditLogsModule,
+    HotelsModule,
     MongooseModule.forFeature([
       { name: Report.name, schema: ReportSchema },
       { name: Post.name, schema: PostSchema },

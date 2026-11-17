@@ -45,4 +45,37 @@ describe('HotelsService reference validation (GEN-12)', () => {
     cities.findOne.mockImplementation(() => lean({ countryCode: 'FR' }));
     await expect(service.create(dto)).rejects.toThrow(/does not belong to country "EG"/);
   });
+
+  describe('refreshRating (HTL-23): a full recount of visible reviews, never an increment', () => {
+    const make = (rows: unknown[]) => {
+      const aggregate = { session: jest.fn(), exec: jest.fn(async () => rows) };
+      const reviews = { aggregate: jest.fn(() => aggregate) };
+      const hotels = { updateOne: jest.fn(() => ({ exec: async () => ({}) })) };
+      const svc = new HotelsService(hotels as never, {} as never, {} as never, {} as never, reviews as never, {} as never, {} as never, {} as never);
+      return { svc, reviews, hotels, aggregate };
+    };
+    const id = '507f1f77bcf86cd799439011';
+
+    it('stores the rounded average and the count of visible reviews', async () => {
+      const { svc, reviews, hotels } = make([{ average: 13 / 3, count: 3 }]);
+      expect(await svc.refreshRating(id)).toEqual({ averageRating: 4.33, ratingCount: 3 });
+      const [[pipeline]] = (reviews.aggregate as any).mock.calls;
+      expect(pipeline[0].$match).toMatchObject({ isHidden: { $ne: true } });
+      expect((hotels.updateOne as any).mock.calls[0][1]).toEqual({ $set: { averageRating: 4.33, ratingCount: 3 } });
+    });
+
+    it('no visible review resets the hotel to unrated', async () => {
+      const { svc } = make([]);
+      expect(await svc.refreshRating(id)).toEqual({ averageRating: null, ratingCount: 0 });
+    });
+
+    it('runs inside the caller\'s transaction when given a session', async () => {
+      const { svc, aggregate, hotels } = make([{ average: 5, count: 1 }]);
+      const session = {} as never;
+      await svc.refreshRating(id, session);
+      expect(aggregate.session).toHaveBeenCalledWith(session);
+      expect((hotels.updateOne as any).mock.calls[0][2]).toEqual({ session });
+    });
+  });
 });
+

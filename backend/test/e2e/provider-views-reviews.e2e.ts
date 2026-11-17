@@ -1,5 +1,7 @@
 import { Types } from 'mongoose';
 
+import { HotelsService } from '../../src/modules/hotels/hotels.service';
+
 import { startApp, type E2EContext } from './helpers/app';
 import { confirmBooking, holdFlight, holdHotel } from './helpers/bookings';
 import { createAirlineWithFlight, createHotelWithRooms, createUser, day, type TestUser } from './helpers/factories';
@@ -316,6 +318,169 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       expect((await list((await createUser(ctx, 'admin')).agent, h.hotelId)).status).toBe(200);
       expect((await list(h.moderator.agent, '507f1f77bcf86cd799439011')).status).toBe(404);
       expect((await list(h.moderator.agent, 'nope')).status).toBe(400);
+    });
+  });
+  describe('reviews (HTL-23) and the public review list (HTL-24)', () => {
+    /** A Completed stay at `hotelId` (a new hotel when omitted). */
+    async function completedStay(opts: { hotelId?: string; roomId?: string; user?: TestUser; checkIn?: number } = {}) {
+      let hotelId = opts.hotelId;
+      let roomId = opts.roomId;
+      let moderator: TestUser | undefined;
+      if (!hotelId || !roomId) {
+        const h = await createHotelWithRooms(ctx, { rooms: 1 });
+        hotelId = h.hotelId;
+        roomId = h.roomIds[0];
+        moderator = h.moderator;
+      }
+      const user = opts.user ?? (await createUser(ctx));
+      const checkIn = opts.checkIn ?? 10;
+      const hold = await holdHotel(user, { hotelId, roomIds: [roomId], checkIn: day(checkIn), checkOut: day(checkIn + 1) });
+      if (hold.status !== 201) throw new Error(`hold failed: ${hold.status} ${JSON.stringify(hold.body)}`);
+      await confirmBooking(ctx, user, 'hotel', hold.body._id);
+      await model('HotelBooking').updateOne({ _id: hold.body._id }, { $set: { status: 'Completed' } });
+      return { user, bookingId: String(hold.body._id), hotelId, roomId, moderator };
+    }
+    const review = (user: TestUser, bookingId: string, body: Record<string, unknown>) => user.agent.post(`/api/hotel-bookings/${bookingId}/review`).send(body);
+    const stored = async (hotelId: string) => {
+      const h = (await model('Hotel').findById(hotelId).lean()) as any;
+      return { averageRating: h.averageRating, ratingCount: h.ratingCount };
+    };
+    const publicList = (hotelId: string, q = '') => ctx.http().get(`/api/hotels/${hotelId}/reviews${q}`);
+
+    it('only a Completed stay can be reviewed, by its owner', async () => {
+      const { hotelId, roomIds } = await createHotelWithRooms(ctx, { rooms: 2 });
+      const user = await createUser(ctx);
+      const pending = await holdHotel(user, { hotelId, roomIds: [roomIds[0]] });
+      expect((await review(user, pending.body._id, { rating: 5 })).status).toBe(409);
+      const confirmed = await holdHotel(user, { hotelId, roomIds: [roomIds[1]] });
+      await confirmBooking(ctx, user, 'hotel', confirmed.body._id);
+      const notYet = await review(user, confirmed.body._id, { rating: 5 });
+      expect(notYet.status).toBe(409);
+      expect(notYet.body.message).toMatch(/Completed/);
+
+      const stay = await completedStay();
+      expect((await review(await createUser(ctx), stay.bookingId, { rating: 5 })).status).toBe(404);
+      expect((await ctx.http().post(`/api/hotel-bookings/${stay.bookingId}/review`).send({ rating: 5 })).status).toBe(401);
+      const ok = await review(stay.user, stay.bookingId, { rating: 4, comment: '  Nice view  ' });
+      expect(ok.status).toBe(201);
+      expect(ok.body).toMatchObject({ hotelId: stay.hotelId, bookingId: stay.bookingId, rating: 4, comment: 'Nice view' });
+    });
+
+    it('one review per reservation: a second is 409 and nothing is counted twice', async () => {
+      const stay = await completedStay();
+      expect((await review(stay.user, stay.bookingId, { rating: 5 })).status).toBe(201);
+      expect((await review(stay.user, stay.bookingId, { rating: 1 })).status).toBe(409);
+      expect(await stored(stay.hotelId)).toEqual({ averageRating: 5, ratingCount: 1 });
+      expect(await model('Review').countDocuments({ bookingId: stay.bookingId })).toBe(1);
+    });
+
+    it.each([
+      ['rating 0', { rating: 0 }, 'rating'],
+      ['rating 6', { rating: 6 }, 'rating'],
+      ['rating 4.5', { rating: 4.5 }, 'rating'],
+      ['rating "5" (a string)', { rating: '5' }, 'rating'],
+      ['no rating', { comment: 'hi' }, 'rating'],
+      ['a 1001-character comment', { rating: 3, comment: 'x'.repeat(1001) }, 'comment'],
+      ['a non-string comment', { rating: 3, comment: 5 }, 'comment'],
+      ['an unknown field', { rating: 3, stars: 3 }, 'stars'],
+    ])('%s is 400 on that field', async (_name, body, field) => {
+      const stay = await completedStay();
+      const res = await review(stay.user, stay.bookingId, body);
+      expect(res.status).toBe(400);
+      expect(res.body.errors.map((e: any) => e.field)).toContain(field);
+      expect(await model('Review').countDocuments({ bookingId: stay.bookingId })).toBe(0);
+    });
+
+    it('a 1000-character comment is accepted; a bad booking id is 400', async () => {
+      const stay = await completedStay();
+      expect((await review(stay.user, stay.bookingId, { rating: 3, comment: 'x'.repeat(1000) })).status).toBe(201);
+      expect((await review(stay.user, 'nope', { rating: 3 })).status).toBe(400);
+    });
+
+    it('the stored average and count follow every create, edit and delete; the last delete makes the hotel unrated', async () => {
+      const first = await completedStay({ checkIn: 10 });
+      const second = await completedStay({ hotelId: first.hotelId, roomId: first.roomId, checkIn: 20 });
+      const r1 = (await review(first.user, first.bookingId, { rating: 5 })).body;
+      const r2 = (await review(second.user, second.bookingId, { rating: 2 })).body;
+      expect(await stored(first.hotelId)).toEqual({ averageRating: 3.5, ratingCount: 2 });
+
+      const edit = await second.user.agent.patch(`/api/reviews/${r2.id}`).send({ rating: 4, comment: 'Better on reflection' });
+      expect(edit.status).toBe(200);
+      expect(edit.body).toMatchObject({ rating: 4, comment: 'Better on reflection' });
+      expect(await stored(first.hotelId)).toEqual({ averageRating: 4.5, ratingCount: 2 });
+
+      const search = () => ctx.http().get('/api/hotels/search').query({ city: 'cairo', checkIn: day(50), checkOut: day(51), guests: 1, minRating: 4.5, limit: 100 });
+      expect(JSON.stringify((await search()).body)).toContain(first.hotelId);
+
+      expect((await (await createUser(ctx, 'admin')).agent.delete(`/api/reviews/${r1.id}`)).status).toBe(200);
+      expect(await stored(first.hotelId)).toEqual({ averageRating: 4, ratingCount: 1 });
+      expect(JSON.stringify((await search()).body)).not.toContain(first.hotelId);
+
+      expect((await second.user.agent.delete(`/api/reviews/${r2.id}`)).body).toEqual({ id: r2.id, deleted: true });
+      expect(await stored(first.hotelId)).toEqual({ averageRating: null, ratingCount: 0 });
+      expect((await publicList(first.hotelId)).body).toMatchObject({ averageRating: null, ratingCount: 0, total: 0, items: [] });
+    });
+
+    it('edit: author only (others 404), same validation, empty body 400; delete: author or admin (others 404)', async () => {
+      const stay = await completedStay();
+      const { id } = (await review(stay.user, stay.bookingId, { rating: 3 })).body;
+      const stranger = await createUser(ctx);
+      expect((await stranger.agent.patch(`/api/reviews/${id}`).send({ rating: 1 })).status).toBe(404);
+      expect((await (await createUser(ctx, 'admin')).agent.patch(`/api/reviews/${id}`).send({ rating: 1 })).status).toBe(404);
+      expect((await stay.user.agent.patch(`/api/reviews/${id}`).send({ rating: 6 })).status).toBe(400);
+      expect((await stay.user.agent.patch(`/api/reviews/${id}`).send({ comment: 'x'.repeat(1001) })).status).toBe(400);
+      expect((await stay.user.agent.patch(`/api/reviews/${id}`).send({})).status).toBe(400);
+      expect((await stay.user.agent.patch(`/api/reviews/${id}`).send({ rating: 2, hotelId: stay.hotelId })).status).toBe(400);
+      expect((await stay.user.agent.patch('/api/reviews/nope').send({ rating: 2 })).status).toBe(400);
+      expect((await stranger.agent.delete(`/api/reviews/${id}`)).status).toBe(404);
+      expect((await ctx.http().delete(`/api/reviews/${id}`)).status).toBe(401);
+      expect(await stored(stay.hotelId)).toEqual({ averageRating: 3, ratingCount: 1 });
+    });
+
+    it('a review hidden by moderation no longer counts and is not listed', async () => {
+      const stay = await completedStay();
+      const { id } = (await review(stay.user, stay.bookingId, { rating: 1 })).body;
+      const report = await (await createUser(ctx)).agent.post('/api/reports').send({ targetType: 'review', targetId: id, reason: 'Offensive language' });
+      expect(report.status).toBe(201);
+      const moderated = await (await createUser(ctx, 'admin')).agent.patch(`/api/admin/reports/${report.body.report.id}`).send({ action: 'hide' });
+      expect(moderated.status).toBe(200);
+      expect(await stored(stay.hotelId)).toEqual({ averageRating: null, ratingCount: 0 });
+      expect((await publicList(stay.hotelId)).body.total).toBe(0);
+    });
+
+    it('public list: newest first, 10 per page, average and count, "Deleted user" for deactivated authors, hidden left out', async () => {
+      const { hotelId } = await createHotelWithRooms(ctx, { rooms: 1 });
+      const authors = await Promise.all(Array.from({ length: 12 }, () => createUser(ctx)));
+      const base = Date.now();
+      await model('Review').insertMany(
+        authors.map((a, i) => ({ hotelId, userId: a.id, bookingId: new Types.ObjectId(), rating: (i % 5) + 1, comment: `Review ${i}`, createdAt: new Date(base - i * 60_000) })),
+      );
+      await model('Review').create({ hotelId, userId: authors[0].id, bookingId: new Types.ObjectId(), rating: 5, isHidden: true });
+      await ctx.get(HotelsService).refreshRating(hotelId);
+      await model('User').updateOne({ _id: authors[0].id }, { $set: { isActive: false, deactivatedAt: new Date() } });
+
+      const page1 = await publicList(hotelId);
+      expect(page1.status).toBe(200);
+      expect(page1.body).toMatchObject({ averageRating: 2.75, ratingCount: 12, page: 1, limit: 10, total: 12, pages: 2 });
+      expect(page1.body.items).toHaveLength(10);
+      expect(page1.body.items[0]).toEqual({ id: expect.any(String), rating: 1, comment: 'Review 0', author: { name: 'Deleted user' }, createdAt: expect.any(String), updatedAt: expect.any(String) });
+      expect(page1.body.items[1].author.name).toBe(authors[1].name);
+      expect((await publicList(hotelId, '?page=2')).body.items.map((r: any) => r.comment)).toEqual(['Review 10', 'Review 11']);
+      expect((await publicList(hotelId, '?limit=101')).status).toBe(400);
+
+      const details = await ctx.http().get(`/api/hotels/${hotelId}`);
+      expect(details.body).toMatchObject({ averageRating: 2.75, ratingCount: 12 });
+      expect(details.body.reviews).toHaveLength(10);
+      expect(details.body.reviews[0].comment).toBe('Review 0');
+    });
+
+    it('an unknown, inactive or malformed hotel id is 404 / 404 / 400; the owner may still review a deactivated hotel', async () => {
+      expect((await publicList('507f1f77bcf86cd799439011')).status).toBe(404);
+      expect((await publicList('nope')).status).toBe(400);
+      const stay = await completedStay();
+      await model('Hotel').updateOne({ _id: stay.hotelId }, { $set: { isActive: false } });
+      expect((await publicList(stay.hotelId)).status).toBe(404);
+      expect((await review(stay.user, stay.bookingId, { rating: 4 })).status).toBe(201);
     });
   });
 });

@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import type { Connection } from 'mongoose';
+import type { ClientSession, Connection } from 'mongoose';
 import { Model, Types } from 'mongoose';
 
 import {
@@ -325,20 +325,50 @@ export class HotelsService {
 }
 
 /**
- * Recomputes the stored averageRating / ratingCount of a hotel from its visible reviews (HTL-12 search uses the
- * stored values). Called by whatever creates, edits, hides or deletes a review (the reviews task).
+ * Recomputes the stored averageRating / ratingCount of a hotel from its visible reviews (HTL-12 search and hotel
+ * details use the stored values). Always a full recount, never an increment, so it cannot double count. Pass the
+ * session of the review write so both commit together; two concurrent writes both update this hotel document,
+ * so one of the transactions retries with a fresh count (runBookingTransaction).
  */
-async refreshRating(hotelId: string | Types.ObjectId) {
-  const [row] = await this.reviewModel
-    .aggregate([
-      { $match: { hotelId: new Types.ObjectId(String(hotelId)), isHidden: { $ne: true } } },
-      { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } },
-    ])
-    .exec();
+async refreshRating(hotelId: string | Types.ObjectId, session?: ClientSession) {
+  const id = new Types.ObjectId(String(hotelId));
+  const aggregate = this.reviewModel.aggregate([
+    { $match: { hotelId: id, isHidden: { $ne: true } } },
+    { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } },
+  ]);
+  if (session) aggregate.session(session);
+  const [row] = await aggregate.exec();
   const averageRating = row ? Number(row.average.toFixed(2)) : null;
   const ratingCount = row?.count ?? 0;
-  await this.hotelModel.updateOne({ _id: new Types.ObjectId(String(hotelId)) }, { $set: { averageRating, ratingCount } }).exec();
+  await this.hotelModel.updateOne({ _id: id }, { $set: { averageRating, ratingCount } }, session ? { session } : {}).exec();
   return { averageRating, ratingCount };
+}
+
+/**
+ * Recounts every hotel (run once at startup so ratings stored before reviews were recounted are right).
+ * Idempotent and read-only on reviews: running it twice changes nothing more.
+ */
+async refreshAllRatings() {
+  const rows: { _id: Types.ObjectId; average: number; count: number }[] = await this.reviewModel
+    .aggregate([
+      { $match: { isHidden: { $ne: true } } },
+      { $group: { _id: '$hotelId', average: { $avg: '$rating' }, count: { $sum: 1 } } },
+    ])
+    .exec();
+  if (rows.length) {
+    await this.hotelModel.bulkWrite(
+      rows.map((row) => ({
+        updateOne: { filter: { _id: row._id }, update: { $set: { averageRating: Number(row.average.toFixed(2)), ratingCount: row.count } } },
+      })),
+    );
+  }
+  const reset = await this.hotelModel
+    .updateMany(
+      { _id: { $nin: rows.map((row) => row._id) }, $or: [{ averageRating: { $ne: null } }, { ratingCount: { $nin: [0, null] } }] },
+      { $set: { averageRating: null, ratingCount: 0 } },
+    )
+    .exec();
+  return { rated: rows.length, reset: reset.modifiedCount };
 }
 
 async getDetails(
@@ -359,9 +389,11 @@ async getDetails(
     throw new NotFoundException('Hotel not found');
   }
 
+  // HTL-24: details embed the 10 newest visible reviews; GET /hotels/:id/reviews pages through all of them.
   const reviews = await this.reviewModel
     .find({ hotelId: hotelObjectId, isHidden: { $ne: true } })
-    .sort({ createdAt: -1 })
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(10)
     .lean()
     .exec();
 
@@ -379,19 +411,11 @@ async getDetails(
     return { ...review, author: { name: presentAuthor(reviewer).name } };
   });
 
-  const averageRating =
-    reviews.length === 0
-      ? null
-      : Number(
-          (
-            reviews.reduce((total, review) => total + review.rating, 0) /
-            reviews.length
-          ).toFixed(2),
-        );
-
+  // The stored rating (kept by refreshRating), so details, search and the reviews list always agree.
   const details = {
     ...hotel.toObject(),
-    averageRating,
+    averageRating: hotel.averageRating ?? null,
+    ratingCount: hotel.ratingCount ?? 0,
     reviews: presentedReviews,
   };
 

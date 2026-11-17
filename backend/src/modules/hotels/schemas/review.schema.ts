@@ -54,3 +54,5 @@ export const ReviewSchema = SchemaFactory.createForClass(Review);
 
 ReviewSchema.index({ bookingId: 1 }, { unique: true });
 ReviewSchema.index({ hotelId: 1, createdAt: -1 });
+// HTL-24: the public list of a hotel's visible reviews, newest first.
+ReviewSchema.index({ hotelId: 1, isHidden: 1, createdAt: -1 });
