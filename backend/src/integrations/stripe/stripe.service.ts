@@ -76,10 +76,15 @@ export class StripeService {
     return this.getClient().paymentIntents.cancel(paymentIntentId);
   }
 
+  /**
+   * PAY-03: refund on the original PaymentIntent. One refund per payment: the idempotency key is the
+   * payment id, so a repeated call returns the same Stripe refund instead of a second one.
+   */
   async createRefund(input: {
     paymentIntentId: string;
     amountMinor: number;
     paymentId: string;
+    refundId: string;
     reason: string;
   }): Promise<Stripe.Refund> {
     return this.getClient().refunds.create(
@@ -89,6 +94,7 @@ export class StripeService {
         reason: 'requested_by_customer',
         metadata: {
           paymentId: input.paymentId,
+          refundId: input.refundId,
           reason: input.reason,
         },
       },

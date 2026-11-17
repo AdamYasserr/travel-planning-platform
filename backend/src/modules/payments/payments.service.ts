@@ -956,6 +956,7 @@ export class PaymentsService {
         paymentIntentId: payment.stripePaymentIntentId,
         amountMinor: payment.refundAmountMinor,
         paymentId: payment._id.toString(),
+        refundId: payment._id.toString(),
         reason: 'booking_cancellation_or_expired_hold',
       });
       payment.stripeRefundId = refund.id;
