@@ -8,6 +8,7 @@ import { Model } from 'mongoose';
 
 import { User, UserDocument } from '../../users/user.schema';
 import { UpdateProfileDto } from '../../users/dto/update-profile.dto';
+import { SupportedCurrenciesService } from '../reference-data/supported-currencies.service';
 
 export interface PublicUser {
   id: string;
@@ -24,6 +25,7 @@ export class UsersService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    private readonly currencies: SupportedCurrenciesService,
   ) {}
 
   async getProfile(userId: string): Promise<PublicUser> {
@@ -59,7 +61,10 @@ export class UsersService {
     }
 
     if (dto.preferredCurrency !== undefined) {
-      user.preferredCurrency = dto.preferredCurrency.toUpperCase();
+      user.preferredCurrency = await this.currencies.assertSupported(
+        dto.preferredCurrency,
+        'preferredCurrency',
+      );
     }
 
     await user.save();
