@@ -24,7 +24,7 @@ describe('AdministrationService', () => {
     flightBookings = { find: (jest.fn as any)(() => query([])), countDocuments: (jest.fn as any)(() => query(0)) };
     hotelBookings = { find: (jest.fn as any)(() => query([])), countDocuments: (jest.fn as any)(() => query(0)) };
     audit = { record: (jest.fn as any)().mockResolvedValue(undefined) };
-    service = new AdministrationService(users, airlines, hotels, flightBookings, hotelBookings, audit, { createForUsers: (jest.fn as any)().mockResolvedValue(undefined) } as any, { find: (jest.fn as any)() } as any);
+    service = new AdministrationService(users, airlines, hotels, flightBookings, hotelBookings, audit, { notify: (jest.fn as any)().mockResolvedValue(undefined), notifyMany: (jest.fn as any)().mockResolvedValue(0) } as any, { find: (jest.fn as any)() } as any);
   });
 
   it('creates an airline moderator with exactly one provider assignment and no exposed password', async () => {
@@ -95,7 +95,7 @@ describe('AdministrationService', () => {
       hotels.find = (jest.fn as any)().mockReturnValue(chain([{ _id: hotelId, name: 'Nile Hotel' }]));
       airlines.find = (jest.fn as any)().mockReturnValue(chain([{ _id: airlineId, name: 'EgyptAir' }]));
       flightsModel = { find: (jest.fn as any)().mockReturnValue(chain([{ _id: flightId, airlineId, flightNumber: 'MS777' }])) };
-      service = new AdministrationService(users, airlines, hotels, flightBookings, hotelBookings, audit, { createForUsers: (jest.fn as any)() } as any, flightsModel);
+      service = new AdministrationService(users, airlines, hotels, flightBookings, hotelBookings, audit, { notify: (jest.fn as any)(), notifyMany: (jest.fn as any)() } as any, flightsModel);
     });
 
     it('returns reference, user, provider, dates, amount and status, newest first', async () => {

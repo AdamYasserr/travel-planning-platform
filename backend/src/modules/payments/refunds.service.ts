@@ -4,6 +4,8 @@ import type { ClientSession, Model } from 'mongoose';
 import { Types } from 'mongoose';
 
 import { UserRole } from '../../common/enums/user-role.enum';
+import { NotificationType } from '../notifications/enums/notification-type.enum';
+import { NotificationsService, PendingNotification } from '../notifications/notifications.service';
 import { StripeService } from '../../integrations/stripe/stripe.service';
 import { nextRefundStatus, paymentStatusForRefund, refundAmountFor, refundStatusFromStripe } from './refund-state';
 import { Payment } from './schemas/payment.schema';
@@ -43,7 +45,26 @@ export class RefundsService {
     @InjectModel(Refund.name) private readonly refundModel: Model<Refund>,
     @InjectModel(Payment.name) private readonly paymentModel: Model<Payment>,
     private readonly stripe: StripeService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  /** GEN-01: "refund started", for the caller to deliver after the commit that created the refund. */
+  createdNote(refund: Pick<Refund, 'userId' | 'bookingType' | 'bookingId' | 'amountMinor' | 'currency'> & { _id: Types.ObjectId }): PendingNotification {
+    return {
+      userId: String(refund.userId),
+      type: NotificationType.REFUND_CREATED,
+      payload: { refundId: String(refund._id), bookingType: refund.bookingType, bookingId: String(refund.bookingId), amountMinor: refund.amountMinor, currency: refund.currency },
+    };
+  }
+
+  /** GEN-01: "refund completed" / "refund failed". */
+  outcomeNote(outcome: RefundOutcome): PendingNotification {
+    return {
+      userId: outcome.userId,
+      type: outcome.status === RefundRecordStatus.REFUNDED ? NotificationType.REFUND_REFUNDED : NotificationType.REFUND_FAILED,
+      payload: { refundId: outcome.refundId, bookingType: outcome.bookingType, bookingId: outcome.bookingId, amountMinor: outcome.amountMinor, currency: outcome.currency, status: outcome.status },
+    };
+  }
 
   /**
    * Opens the refund of a payment inside the caller's transaction (idempotent: an existing refund
@@ -89,6 +110,12 @@ export class RefundsService {
    * for the retry job. Returns the outcome when the refund reached a final state.
    */
   async process(refundId: Types.ObjectId | string): Promise<RefundOutcome | null> {
+    const outcome = await this.sendToStripe(refundId);
+    if (outcome) await this.notifications.deliver([this.outcomeNote(outcome)]);
+    return outcome;
+  }
+
+  private async sendToStripe(refundId: Types.ObjectId | string): Promise<RefundOutcome | null> {
     const now = new Date();
     const claimed = await this.refundModel
       .findOneAndUpdate(

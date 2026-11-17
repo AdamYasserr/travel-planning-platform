@@ -36,8 +36,9 @@ describe('flight cancellation is atomic (FLT-06) on a real replica set', () => {
       await m.createCollection();
       await m.createIndexes();
     }
-    refunds = new RefundsService(refundModel, paymentModel, stripe as never);
-    payments = new PaymentsService(paymentModel, webhookModel, hotelBookingModel, bookingModel, inventoryModel, conn as never, stripe as never, { code: 'EGP' } as never, { get: () => undefined } as never, refunds);
+    const notifications = { deliver: jest.fn(async () => undefined), notify: jest.fn(async () => undefined) };
+    refunds = new RefundsService(refundModel, paymentModel, stripe as never, notifications as never);
+    payments = new PaymentsService(paymentModel, webhookModel, hotelBookingModel, bookingModel, inventoryModel, conn as never, stripe as never, { code: 'EGP' } as never, { get: () => undefined } as never, refunds, notifications as never);
   });
 
   afterAll(async () => {

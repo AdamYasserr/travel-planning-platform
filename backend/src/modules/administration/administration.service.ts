@@ -18,6 +18,7 @@ import { FlightBooking } from '../flight-bookings/schemas/flight-booking.schema'
 import { HotelBooking } from '../hotel-bookings/schemas/hotel-booking.schema';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/enums/notification-type.enum';
 import { Flight } from '../flights/schemas/flight.schema';
 import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
 import { HotelBookingStatus } from '../hotel-bookings/schemas/hotel-booking.schema';
@@ -108,6 +109,7 @@ export class AdministrationService {
     account.lockUntil = null;
     await account.save();
     await this.auditLogs.record(actorId, suspended ? 'account.suspended' : 'account.reactivated', 'user', id);
+    await this.notifications.notify(id, suspended ? NotificationType.ACCOUNT_SUSPENDED : NotificationType.ACCOUNT_REACTIVATED, { accountId: id });
     return { message: suspended ? 'Account suspended' : 'Account reactivated', account: this.publicAccount(account) };
   }
 
@@ -123,12 +125,7 @@ export class AdministrationService {
     await provider.save();
     await this.auditLogs.record(actorId, active ? 'provider.reactivated' : 'provider.deactivated', type, id);
     if (!active && affectedUsers.length) {
-      await this.notifications.createForUsers(affectedUsers, {
-        title: 'Travel provider unavailable',
-        message: 'A travel provider for one of your upcoming bookings is no longer accepting new bookings. Your existing reservation remains on file. Please review its details.',
-        resourceType: type,
-        resourceId: id,
-      });
+      await this.notifications.notifyMany(affectedUsers, NotificationType.PROVIDER_SUSPENDED, { providerType: type, providerId: id });
     }
     return { message: active ? 'Provider reactivated' : 'Provider deactivated', provider: { id: provider._id.toString(), isActive: provider.isActive } };
   }

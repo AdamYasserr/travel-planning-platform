@@ -282,4 +282,134 @@ describe('refunds, cancellation, notifications and e-tickets (PAY-03, FLT-06, GE
       expect(await seatsLeft(f.flightId)).toBe(before + 4);
     });
   });
+  describe('notifications (GEN-01)', () => {
+    const inbox = async (user: TestUser, query = '') => (await user.agent.get(`/api/notifications${query}`)).body;
+    const types = async (user: TestUser) => (await inbox(user, '?limit=100')).items.map((n: any) => n.type);
+
+    it('a confirmed booking notifies its owner only', async () => {
+      const { user, bookingId } = await paidHotel();
+      const stranger = await createUser(ctx);
+      const mine = await inbox(user);
+      expect(mine.items[0]).toMatchObject({ type: 'booking_confirmed', title: 'Booking confirmed', isRead: false, resourceType: 'booking', resourceId: bookingId });
+      expect(mine.items[0].payload).toMatchObject({ bookingType: 'hotel', bookingId, amountMinor: 450000, currency: 'egp' });
+      expect((await inbox(stranger)).total).toBe(0);
+    });
+
+    it('a customer cancel notifies: booking cancelled, refund started, refund completed (newest first)', async () => {
+      const { user, bookingId } = await paidHotel();
+      const { refundId } = (await cancelHotel(user, bookingId)).body;
+      const list = (await inbox(user)).items;
+      expect(list.slice(0, 3).map((n: any) => n.type)).toEqual(['refund_refunded', 'refund_created', 'booking_cancelled']);
+      expect(list[0].payload).toMatchObject({ refundId, amountMinor: 450000, status: 'Refunded' });
+      expect(list[2].payload).toMatchObject({ bookingId, refundPercentage: 100, refundId });
+    });
+
+    it('a failed refund notifies the user, once', async () => {
+      const { user, bookingId, paymentId } = await paidHotel();
+      ctx.stripe.nextRefundOutcomes.push('pending');
+      await cancelHotel(user, bookingId);
+      const event = ctx.stripe.refundEvent(ctx.stripe.stripeRefundFor(paymentId)!.id, 'failed');
+      await sendWebhook(ctx, event);
+      await sendWebhook(ctx, event);
+      expect((await types(user)).filter((t: string) => t === 'refund_failed')).toHaveLength(1);
+      expect(await types(user)).not.toContain('refund_refunded');
+    });
+
+    it('a 0% cancel notifies the cancellation and no refund', async () => {
+      const { user, bookingId } = await paidHotel({ checkIn: 3 });
+      await cancelHotel(user, bookingId);
+      const all = await types(user);
+      expect(all).toContain('booking_cancelled');
+      expect(all).not.toContain('refund_created');
+    });
+
+    it('a cancelled flight notifies every affected booking, and nobody else', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 6 });
+      const [a, held, done, other] = [await createUser(ctx), await createUser(ctx), await createUser(ctx), await createUser(ctx)];
+      const hA = await holdFlight(a, { flightId: f.flightId });
+      await confirmBooking(ctx, a, 'flight', hA.body._id);
+      await holdFlight(held, { flightId: f.flightId });
+      const hD = await holdFlight(done, { flightId: f.flightId });
+      await confirmBooking(ctx, done, 'flight', hD.body._id);
+      await model('FlightBooking').updateOne({ _id: hD.body._id }, { $set: { status: 'Completed' } });
+
+      await f.moderator.agent.post(`/api/flights/${f.flightId}/cancel`);
+      expect(await types(a)).toEqual(expect.arrayContaining(['flight_cancelled', 'refund_created', 'refund_refunded']));
+      const cancelledNote = (await inbox(a, '?limit=100')).items.find((n: any) => n.type === 'flight_cancelled');
+      expect(cancelledNote.payload).toMatchObject({ flightId: f.flightId, bookingId: hA.body._id });
+      expect(await types(held)).toEqual(['flight_cancelled']);
+      expect(await types(done)).not.toContain('flight_cancelled');
+      expect((await inbox(other)).total).toBe(0);
+    });
+
+    it('a new departure or arrival time notifies Confirmed bookings only; other edits notify nobody', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 6, departInDays: 50 });
+      const [confirmed, pending] = [await createUser(ctx), await createUser(ctx)];
+      const hold = await holdFlight(confirmed, { flightId: f.flightId });
+      await confirmBooking(ctx, confirmed, 'flight', hold.body._id);
+      await holdFlight(pending, { flightId: f.flightId });
+
+      expect((await f.moderator.agent.patch(`/api/flights/${f.flightId}`).send({ flightNumber: `${f.airlineId.slice(-2).toUpperCase()}777` })).status).toBe(200);
+      expect(await types(confirmed)).not.toContain('flight_schedule_changed');
+
+      const depart = new Date(`${day(50)}T10:30:00.000Z`);
+      const arrive = new Date(depart.getTime() + 4 * 3_600_000);
+      const res = await f.moderator.agent.patch(`/api/flights/${f.flightId}`).send({ departureTime: depart.toISOString(), arrivalTime: arrive.toISOString() });
+      expect(res.status).toBe(200);
+      const note = (await inbox(confirmed)).items[0];
+      expect(note).toMatchObject({ type: 'flight_schedule_changed' });
+      expect(note.payload).toMatchObject({ flightId: f.flightId, bookingId: hold.body._id, departureTime: depart.toISOString() });
+      expect((await inbox(pending)).total).toBe(0);
+    });
+
+    it('suspending and reactivating an account notifies that user', async () => {
+      const admin = await createUser(ctx, 'admin');
+      const user = await createUser(ctx);
+      expect((await admin.agent.patch(`/api/admin/accounts/${user.id}/suspend`)).status).toBe(200);
+      expect((await admin.agent.patch(`/api/admin/accounts/${user.id}/reactivate`)).status).toBe(200);
+      const fresh = { ...user, agent: (await (await import('./helpers/factories')).login(ctx, user.email)) };
+      expect(await types(fresh)).toEqual(['account_reactivated', 'account_suspended']);
+    });
+
+    it('lists 10 per page by default, newest first, and accepts limit up to 100', async () => {
+      const admin = await createUser(ctx, 'admin');
+      const user = await createUser(ctx);
+      for (let i = 0; i < 6; i++) {
+        await admin.agent.patch(`/api/admin/accounts/${user.id}/suspend`);
+        await admin.agent.patch(`/api/admin/accounts/${user.id}/reactivate`);
+      }
+      const agent = (await import('./helpers/factories')).login(ctx, user.email);
+      const page1 = (await (await agent).get('/api/notifications')).body;
+      expect(page1).toMatchObject({ page: 1, limit: 10, total: 12, unread: 12, pages: 2 });
+      expect(page1.items).toHaveLength(10);
+      expect(page1.items[0].type).toBe('account_reactivated');
+      const times = page1.items.map((n: any) => new Date(n.createdAt).getTime());
+      expect([...times].sort((x, y) => y - x)).toEqual(times);
+      expect((await (await agent).get('/api/notifications?page=2')).body.items).toHaveLength(2);
+      expect((await (await agent).get('/api/notifications?limit=101')).status).toBe(400);
+    });
+
+    it('mark one read, mark all read, and only for your own notifications', async () => {
+      const { user } = await paidHotel();
+      const { user: other } = await paidHotel();
+      const [note] = (await inbox(user)).items;
+
+      expect((await other.agent.patch(`/api/notifications/${note._id}/read`)).status).toBe(404);
+      expect((await user.agent.patch('/api/notifications/not-an-id/read')).status).toBe(400);
+      expect((await ctx.http().patch(`/api/notifications/${note._id}/read`)).status).toBe(401);
+
+      const read = await user.agent.patch(`/api/notifications/${note._id}/read`);
+      expect(read.status).toBe(200);
+      expect(read.body.isRead).toBe(true);
+
+      await cancelHotel(user, (await model('HotelBooking').findOne({ userId: user.id }).lean() as any)._id);
+      expect((await inbox(user)).unread).toBeGreaterThan(0);
+      const all = await user.agent.patch('/api/notifications/read-all');
+      expect(all.status).toBe(200);
+      expect(all.body.updated).toBeGreaterThan(0);
+      expect((await inbox(user)).unread).toBe(0);
+      expect((await inbox(other)).unread).toBe(1);
+      expect((await ctx.http().patch('/api/notifications/read-all')).status).toBe(401);
+    });
+  });
 });

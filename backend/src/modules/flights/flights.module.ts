@@ -36,12 +36,14 @@ import { City, CitySchema } from '../reference-data/schemas/city.schema';
 import { FlightBookingsModule } from '../flight-bookings/flight-bookings.module';
 import { ReferenceDataModule } from '../reference-data/reference-data.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     FlightBookingsModule,
     ReferenceDataModule,
     PaymentsModule,
+    NotificationsModule,
     MongooseModule.forFeature([
       {
         name: Flight.name,

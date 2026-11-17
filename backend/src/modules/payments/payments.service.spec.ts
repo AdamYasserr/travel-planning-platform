@@ -46,6 +46,7 @@ describe('PaymentsService', () => {
   /** The refunds collaborator (RefundsService): a refund is opened in the transaction, sent to Stripe after it. */
   let refunds: Record<string, ReturnType<typeof jest.fn>>;
   let openedRefund: Record<string, any> | null;
+  const notifications = { deliver: jest.fn(async () => undefined), notify: jest.fn(async () => undefined) };
   const refundObjectId = new Types.ObjectId();
 
   function makeService() {
@@ -60,6 +61,7 @@ describe('PaymentsService', () => {
       { code: 'EGP' } as never,
       { get: (key: string) => configValues[key] } as never,
       refunds as never,
+      notifications as never,
     );
   }
 
@@ -183,6 +185,8 @@ describe('PaymentsService', () => {
       processForPayment: jest.fn(async () => null),
       findForPayment: jest.fn(async () => openedRefund),
       retryPending: jest.fn(async () => []),
+      createdNote: jest.fn(() => ({ userId: 'u', type: 'refund_created', payload: {} })),
+      outcomeNote: jest.fn(() => ({ userId: 'u', type: 'refund_refunded', payload: {} })),
     };
     connection = {
       startSession: jest.fn(async () => ({

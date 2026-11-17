@@ -162,7 +162,8 @@ describe('administration (ACC-14, ACC-15, ACC-16, ACC-17)', () => {
 
       const mine = await booked.agent.get('/api/notifications');
       expect(mine.status).toBe(200);
-      expect(mine.body.total).toBe(1);
+      // GEN-01: the inbox now also holds the "booking confirmed" notification; exactly one is about the provider.
+      expect(mine.body.items.filter((n: any) => n.title === 'Travel provider unavailable')).toHaveLength(1);
       expect(mine.body.items[0]).toMatchObject({ title: 'Travel provider unavailable', resourceType: 'hotel', resourceId: hotelId, isRead: false });
       expect((await bystander.agent.get('/api/notifications')).body.total).toBe(0);
       // the existing booking stays on file

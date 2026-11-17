@@ -36,6 +36,8 @@ import {
   PaymentStatus,
 } from './enums/payment-status.enum';
 import { RefundsService } from './refunds.service';
+import { NotificationType } from '../notifications/enums/notification-type.enum';
+import { NotificationsService, PendingNotification } from '../notifications/notifications.service';
 import { RefundReason, RefundRecordStatus } from './schemas/refund.schema';
 import { CreatePaymentDto } from './dto/payments.dto';
 import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
@@ -55,6 +57,7 @@ export type FlightCancellationResult = {
   expiredHolds: { bookingId: string; userId: string }[];
   refundIds: string[];
   intentsToCancel: string[];
+  notes: PendingNotification[];
 };
 
 type CancellationResult = {
@@ -63,6 +66,7 @@ type CancellationResult = {
   refundPercentage: number;
   cancelPaymentIntentId?: string;
   refundId?: string;
+  notes?: PendingNotification[];
   conflict?: string;
 };
 
@@ -87,6 +91,7 @@ export class PaymentsService {
     private readonly platformCurrency: PlatformCurrencyService,
     private readonly config: ConfigService,
     private readonly refunds: RefundsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -365,10 +370,13 @@ export class PaymentsService {
     }
 
     let paymentId: Types.ObjectId | null = null;
+    // GEN-01: decided inside the transaction, delivered only after it commits.
+    let notes: PendingNotification[] = [];
     try {
       const session = await this.connection.startSession();
       try {
         await session.withTransaction(async () => {
+          notes = [];
           const existingEvent = await this.webhookEventModel
             .findOne({ stripeEventId: event.id })
             .session(session)
@@ -392,7 +400,7 @@ export class PaymentsService {
           const payment = await this.findPaymentForEvent(event, session);
           if (payment) {
             paymentId = payment._id;
-            await this.applyEvent(event, payment, session);
+            await this.applyEvent(event, payment, session, notes);
             eventRecord.paymentId = payment._id;
           }
           eventRecord.status = StripeWebhookEventStatus.PROCESSED;
@@ -406,6 +414,7 @@ export class PaymentsService {
       if (!this.isDuplicateKeyError(error)) throw error;
     }
 
+    await this.notifications.deliver(notes);
     // A refund opened by this event (late or mismatched success) is sent to Stripe after the commit.
     if (paymentId) await this.refunds.processForPayment(paymentId);
   }
@@ -576,6 +585,14 @@ export class PaymentsService {
           payment,
           refundPercentage,
           refundId: refund ? String(refund._id) : undefined,
+          notes: [
+            {
+              userId,
+              type: NotificationType.BOOKING_CANCELLED,
+              payload: { bookingType, bookingId: String(booking._id), refundPercentage, refundId: refund ? String(refund._id) : null },
+            },
+            ...(refund ? [this.refunds.createdNote(refund)] : []),
+          ],
         };
       });
     } finally {
@@ -585,6 +602,7 @@ export class PaymentsService {
     if (!result) throw new ServiceUnavailableException('Booking cancellation did not complete');
     if (result.conflict) throw new ConflictException(result.conflict);
     await this.releaseStripePayment(result.cancelPaymentIntentId);
+    await this.notifications.deliver(result.notes ?? []);
     if (result.refundId) await this.refunds.process(result.refundId);
     const refund = result.refundId ? await this.refunds.findForPayment(result.payment!._id) : null;
     return {
@@ -683,7 +701,12 @@ export class PaymentsService {
       if (!(await markFlightCancelled(session))) {
         throw new ConflictException('Flight is already cancelled or can no longer be cancelled');
       }
-      const outcome: FlightCancellationResult = { cancelledBookings: [], expiredHolds: [], refundIds: [], intentsToCancel: [] };
+      const outcome: FlightCancellationResult = { cancelledBookings: [], expiredHolds: [], refundIds: [], intentsToCancel: [], notes: [] };
+      const flightCancelled = (userId: string, bookingId: string, refundId: string | null): PendingNotification => ({
+        userId,
+        type: NotificationType.FLIGHT_CANCELLED,
+        payload: { bookingType: PaymentBookingType.FLIGHT, flightId: String(flightId), bookingId, refundId },
+      });
 
       const holds = await this.flightBookingModel
         .find({ flightId, status: FlightBookingStatus.PENDING_PAYMENT })
@@ -698,6 +721,7 @@ export class PaymentsService {
           await this.persistPayment(payment, session);
         }
         outcome.expiredHolds.push({ bookingId: String(hold._id), userId: String(hold.userId) });
+        outcome.notes.push(flightCancelled(String(hold.userId), String(hold._id), null));
       }
 
       const confirmed = await this.flightBookingModel
@@ -728,6 +752,8 @@ export class PaymentsService {
             refundId = String(refund._id);
             outcome.refundIds.push(refundId);
           }
+          outcome.notes.push(flightCancelled(String(booking.userId), String(booking._id), refundId));
+          if (refund) outcome.notes.push(this.refunds.createdNote(refund));
         } else {
           this.logger.error(`Confirmed flight booking ${String(booking._id)} has no successful payment; cancelled without a refund`);
         }
@@ -737,6 +763,7 @@ export class PaymentsService {
     });
 
     for (const intentId of result.intentsToCancel) await this.releaseStripePayment(intentId);
+    await this.notifications.deliver(result.notes);
     for (const refundId of result.refundIds) await this.refunds.process(refundId);
     return result;
   }
@@ -797,18 +824,25 @@ export class PaymentsService {
     event: Stripe.Event,
     payment: Payment,
     session: ClientSession,
+    notes: PendingNotification[],
   ) {
     const object = event.data.object as unknown as Record<string, any>;
     switch (event.type) {
       case 'payment_intent.succeeded':
-        return this.applyIntentSucceeded(object, payment, session);
+        return this.applyIntentSucceeded(object, payment, session, notes);
       case 'payment_intent.payment_failed':
         return this.applyIntentFailed(object, payment, session);
       case 'refund.updated':
-      case 'refund.failed':
-        return this.refunds.applyStripeRefund(object, payment._id, session);
-      case 'charge.refunded':
-        return this.refunds.applyChargeRefunded(object, payment._id, session);
+      case 'refund.failed': {
+        const outcome = await this.refunds.applyStripeRefund(object, payment._id, session);
+        if (outcome) notes.push(this.refunds.outcomeNote(outcome));
+        return;
+      }
+      case 'charge.refunded': {
+        const outcome = await this.refunds.applyChargeRefunded(object, payment._id, session);
+        if (outcome) notes.push(this.refunds.outcomeNote(outcome));
+        return;
+      }
       default:
         return;
     }
@@ -833,6 +867,7 @@ export class PaymentsService {
     intent: Record<string, any>,
     payment: Payment,
     session: ClientSession,
+    notes: PendingNotification[],
   ) {
     if (!this.isOurIntent(intent, payment, 'payment_intent.succeeded')) return;
     if (
@@ -889,6 +924,11 @@ export class PaymentsService {
         payment.status = PaymentStatus.SUCCEEDED;
         payment.lastFailureCode = undefined;
         await this.persistPayment(payment, session);
+        notes.push({
+          userId: payment.userId.toString(),
+          type: NotificationType.BOOKING_CONFIRMED,
+          payload: { bookingType: payment.bookingType, bookingId: payment.bookingId.toString(), paymentId: payment._id.toString(), amountMinor: payment.amountMinor, currency: payment.currency },
+        });
         return;
       }
     }
@@ -907,7 +947,7 @@ export class PaymentsService {
       `Payment ${payment._id.toString()} (${payment.bookingType} booking ${payment.bookingId.toString()}) was not confirmed: ${reason}. Flagged Refund Pending`,
     );
     // The money was taken: refund all of what Stripe received (PAY-03), sent to Stripe after the commit.
-    await this.refunds.createInTransaction(
+    const lateRefund = await this.refunds.createInTransaction(
       payment,
       {
         paidMinor: actualAmount,
@@ -916,6 +956,7 @@ export class PaymentsService {
       },
       session,
     );
+    if (lateRefund) notes.push(this.refunds.createdNote(lateRefund));
     payment.lastFailureCode = reason;
     await this.persistPayment(payment, session);
   }

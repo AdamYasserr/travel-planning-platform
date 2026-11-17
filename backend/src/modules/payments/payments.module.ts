@@ -14,6 +14,7 @@ import {
   CabinInventory,
   CabinInventorySchema,
 } from '../flights/schemas/cabin-inventory.schema';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { ReferenceDataModule } from '../reference-data/reference-data.module';
 import { BookingPoliciesController } from './booking-policies.controller';
 import { BookingPoliciesService } from './booking-policies.service';
@@ -29,6 +30,7 @@ import { StripeWebhookController } from '../../integrations/stripe/stripe-webhoo
   imports: [
     StripeModule,
     ReferenceDataModule,
+    NotificationsModule,
     MongooseModule.forFeature([
       { name: Payment.name, schema: PaymentSchema },
       { name: StripeWebhookEvent.name, schema: StripeWebhookEventSchema },

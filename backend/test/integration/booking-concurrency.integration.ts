@@ -47,7 +47,7 @@ describe('hotel hold concurrency (HTL-18) on a real replica set', () => {
       await m.createIndexes();
     }
     const stripe = { cancelPaymentIntent: jest.fn(async () => undefined) };
-    payments = new PaymentsService(paymentModel, webhookModel, bookingModel, flightBookingModel, inventoryModel, conn as never, stripe as never, { code: "EGP" } as never, { get: () => undefined } as never, { createInTransaction: jest.fn(async () => null), process: jest.fn(), processForPayment: jest.fn(), findForPayment: jest.fn(async () => null), retryPending: jest.fn() } as never);
+    payments = new PaymentsService(paymentModel, webhookModel, bookingModel, flightBookingModel, inventoryModel, conn as never, stripe as never, { code: "EGP" } as never, { get: () => undefined } as never, { createInTransaction: jest.fn(async () => null), process: jest.fn(), processForPayment: jest.fn(), findForPayment: jest.fn(async () => null), retryPending: jest.fn() } as never, { deliver: jest.fn(async () => undefined) } as never);
     bookings = new HotelBookingsService(bookingModel, hotelModel, roomModel, payments as never, conn as never);
     const references = { assertCityInCountry: jest.fn(async () => undefined) };
     const currencies = { resolve: jest.fn((c?: string) => (c ?? 'EGP').toUpperCase()) };

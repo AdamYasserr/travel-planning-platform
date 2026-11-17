@@ -11,7 +11,7 @@ describe('NotificationsService', () => {
     };
     const service = new NotificationsService(notifications);
     const result = await service.listForUser(new Types.ObjectId().toString());
-    expect(result).toMatchObject({ total: 1, unread: 1, page: 1, limit: 20 });
+    expect(result).toMatchObject({ total: 1, unread: 1, page: 1, limit: 10 }); // GEN-05 page size
   });
 
   it('only marks a notification belonging to the requesting user as read', async () => {

@@ -21,6 +21,10 @@ import { Airport } from '../airports/schemas/airport.schema';
 import { ReferenceValidationService } from '../reference-data/reference-validation.service';
 import { isValidIanaTimeZone, parseFlightInstant } from './timezone.util';
 import { PaymentsService } from '../payments/payments.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/enums/notification-type.enum';
+import { FlightBooking } from '../flight-bookings/schemas/flight-booking.schema';
+import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
 
 import {
   CreateFlightDto,
@@ -45,6 +49,11 @@ private readonly airportModel: Model<Airport>,
     private readonly references: ReferenceValidationService,
 
     private readonly payments: PaymentsService,
+
+    private readonly notifications: NotificationsService,
+
+    @InjectModel(FlightBooking.name)
+    private readonly flightBookingModel: Model<FlightBooking>,
   ) {}
 
   // Check airline management permission
@@ -265,6 +274,27 @@ return this.toLocalFlightResponse(flight);
       throw new ConflictException(
         'Flight is no longer available for editing',
       );
+    }
+
+    // GEN-01: a new departure or arrival time is announced to every Confirmed booking on the flight.
+    if (
+      flight.departureTime.getTime() !== departureTime.getTime() ||
+      flight.arrivalTime.getTime() !== arrivalTime.getTime()
+    ) {
+      const affected = await this.flightBookingModel
+        .find({ flightId: updatedFlight._id, status: FlightBookingStatus.CONFIRMED })
+        .select({ _id: 1, userId: 1 })
+        .lean()
+        .exec();
+      for (const booking of affected) {
+        await this.notifications.notify(String(booking.userId), NotificationType.FLIGHT_SCHEDULE_CHANGED, {
+          bookingType: 'flight',
+          flightId: String(updatedFlight._id),
+          bookingId: String(booking._id),
+          departureTime: departureTime.toISOString(),
+          arrivalTime: arrivalTime.toISOString(),
+        });
+      }
     }
 
    return this.toLocalFlightResponse(updatedFlight);
