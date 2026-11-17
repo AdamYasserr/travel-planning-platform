@@ -34,7 +34,8 @@ import {
   PaymentBookingType,
   PaymentStatus,
 } from './enums/payment-status.enum';
-import { RefundStatus } from './enums/refund-status.enum';
+import { RefundsService } from './refunds.service';
+import { RefundReason, RefundRecordStatus } from './schemas/refund.schema';
 import { CreatePaymentDto } from './dto/payments.dto';
 import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
 import { TEST_PAYMENT_METHODS, isTestConfirmEnabled } from './test-mode';
@@ -53,7 +54,7 @@ type CancellationResult = {
   payment?: Payment | null;
   refundPercentage: number;
   cancelPaymentIntentId?: string;
-  retryRefund?: boolean;
+  refundId?: string;
   conflict?: string;
 };
 
@@ -77,6 +78,7 @@ export class PaymentsService {
     private readonly stripeService: StripeService,
     private readonly platformCurrency: PlatformCurrencyService,
     private readonly config: ConfigService,
+    private readonly refunds: RefundsService,
   ) {}
 
   /**
@@ -106,9 +108,6 @@ export class PaymentsService {
               currency: currency.toLowerCase(),
               status: PaymentStatus.PENDING,
               holdExpiresAt: booking.holdExpiresAt,
-              refundAmountMinor: 0,
-              refundPercentage: 0,
-              refundStatus: RefundStatus.NOT_REQUIRED,
             },
           },
           { new: true, upsert: true, setDefaultsOnInsert: true },
@@ -334,45 +333,19 @@ export class PaymentsService {
     }
     const payment = await this.paymentModel
       .findOne({ _id: paymentId, userId })
-      .select({
-        userId: 0,
-        stripePaymentIntentId: 0,
-        stripeRefundId: 0,
-      })
+      .select({ userId: 0, stripePaymentIntentId: 0 })
       .lean()
       .exec();
     if (!payment) throw new NotFoundException('Payment not found');
-    return { ...payment, refundId: this.refundIdFor(payment) };
-  }
-
-  /**
-   * GET /refunds/:id. A refund is not a separate record yet: its id is the payment id
-   * (`refundId` on the payment and on the cancellation response).
-   */
-  async getRefundForUser(userId: string, refundId: string) {
-    const payment = await this.getForUser(userId, refundId);
-    if (!payment.refundId) {
-      throw new NotFoundException('No refund exists for this payment');
-    }
+    const refund = await this.refunds.findForPayment(payment._id);
+    // The refund itself lives in the Refund record (PAY-03); use refundId with GET /refunds/:id.
     return {
-      refundId: payment.refundId,
-      paymentId: String(payment._id),
-      bookingType: payment.bookingType,
-      bookingId: payment.bookingId,
-      status: payment.refundStatus,
-      percentage: payment.refundPercentage,
-      amountMinor: payment.refundAmountMinor,
-      currency: payment.currency,
-      requestedAt: payment.refundRequestedAt ?? null,
-      refundedAt: payment.refundedAt ?? null,
+      ...payment,
+      refundId: refund ? String(refund._id) : null,
+      refundStatus: refund?.status ?? null,
+      refundPercentage: refund?.percentage ?? 0,
+      refundAmountMinor: refund?.amountMinor ?? 0,
     };
-  }
-
-  private refundIdFor(payment: { _id: unknown; refundStatus?: RefundStatus; refundAmountMinor?: number }): string | null {
-    const hasRefund =
-      (payment.refundStatus ?? RefundStatus.NOT_REQUIRED) !== RefundStatus.NOT_REQUIRED ||
-      (payment.refundAmountMinor ?? 0) > 0;
-    return hasRefund ? String(payment._id) : null;
   }
 
   async handleStripeWebhook(payload: Buffer, signature: string) {
@@ -425,12 +398,8 @@ export class PaymentsService {
       if (!this.isDuplicateKeyError(error)) throw error;
     }
 
-    if (paymentId) {
-      const payment = await this.paymentModel.findById(paymentId).exec();
-      if (payment?.refundStatus === RefundStatus.PENDING) {
-        await this.processRefund(payment);
-      }
-    }
+    // A refund opened by this event (late or mismatched success) is sent to Stripe after the commit.
+    if (paymentId) await this.refunds.processForPayment(paymentId);
   }
 
   async cancelBooking(
@@ -469,7 +438,7 @@ export class PaymentsService {
           result = {
             booking,
             payment,
-            refundPercentage: payment?.refundPercentage ?? 0,
+            refundPercentage: 0,
             conflict: 'This booking is already cancelled',
           };
           return;
@@ -588,22 +557,17 @@ export class PaymentsService {
         if (bookingType === PaymentBookingType.FLIGHT) {
           await this.releaseFlightSeats(booking as FlightBooking, session);
         }
-        const refundAmountMinor = Math.round(
-          (payment.amountMinor * refundPercentage) / 100,
+        // PAY-03: the tier on the booking decides the share; 0% opens no refund at all.
+        const refund = await this.refunds.createInTransaction(
+          payment,
+          { paidMinor: payment.amountMinor, percentage: refundPercentage, reason: RefundReason.BOOKING_CANCELLED },
+          session,
         );
-        payment.refundPercentage = refundPercentage;
-        payment.refundAmountMinor = refundAmountMinor;
-        if (refundAmountMinor > 0) {
-          payment.refundStatus = RefundStatus.PENDING;
-          payment.status = PaymentStatus.REFUND_PENDING;
-          payment.refundRequestedAt = now;
-        }
-        await this.persistPayment(payment, session);
         result = {
           booking: cancelled,
           payment,
           refundPercentage,
-          retryRefund: refundAmountMinor > 0,
+          refundId: refund ? String(refund._id) : undefined,
         };
       });
     } finally {
@@ -613,15 +577,14 @@ export class PaymentsService {
     if (!result) throw new ServiceUnavailableException('Booking cancellation did not complete');
     if (result.conflict) throw new ConflictException(result.conflict);
     await this.releaseStripePayment(result.cancelPaymentIntentId);
-    if (result.retryRefund && result.payment) {
-      result.payment = await this.processRefund(result.payment);
-    }
+    if (result.refundId) await this.refunds.process(result.refundId);
+    const refund = result.refundId ? await this.refunds.findForPayment(result.payment!._id) : null;
     return {
       booking: result.booking,
       refundPercentage: result.refundPercentage,
-      refundStatus: result.payment?.refundStatus ?? RefundStatus.NOT_REQUIRED,
-      // Use this id with GET /refunds/:id (equals the payment id); null when nothing is refunded.
-      refundId: result.payment ? this.refundIdFor(result.payment) : null,
+      refundStatus: refund?.status ?? null,
+      // Use this id with GET /refunds/:id; null when nothing is refunded.
+      refundId: refund ? String(refund._id) : null,
     };
   }
 
@@ -686,15 +649,14 @@ export class PaymentsService {
     return { hotels: hotels.modifiedCount, flights: flights.modifiedCount };
   }
 
+  /**
+   * PAY-03: refunds Stripe never accepted (request failed or the process stopped) are retried here.
+   * Safe to overlap with itself: each refund is leased before Stripe is called (RefundsService.process).
+   * Failed refunds are final and never retried.
+   */
   @Cron(CronExpression.EVERY_5_MINUTES)
   async retryPendingRefunds() {
-    const pending = await this.paymentModel
-      .find({ refundStatus: RefundStatus.PENDING })
-      .limit(EXPIRATION_BATCH_SIZE)
-      .exec();
-    for (const payment of pending) {
-      await this.processRefund(payment);
-    }
+    return this.refunds.retryPending();
   }
 
   async expireFlightHoldsForInventory(inventoryId: Types.ObjectId) {
@@ -761,7 +723,10 @@ export class PaymentsService {
       case 'payment_intent.payment_failed':
         return this.applyIntentFailed(object, payment, session);
       case 'refund.updated':
-        return this.applyRefundUpdate(object, payment, session);
+      case 'refund.failed':
+        return this.refunds.applyStripeRefund(object, payment._id, session);
+      case 'charge.refunded':
+        return this.refunds.applyChargeRefunded(object, payment._id, session);
       default:
         return;
     }
@@ -859,11 +824,16 @@ export class PaymentsService {
     this.logger.warn(
       `Payment ${payment._id.toString()} (${payment.bookingType} booking ${payment.bookingId.toString()}) was not confirmed: ${reason}. Flagged Refund Pending`,
     );
-    payment.status = PaymentStatus.REFUND_PENDING;
-    payment.refundAmountMinor = actualAmount;
-    payment.refundPercentage = 100;
-    payment.refundStatus = RefundStatus.PENDING;
-    payment.refundRequestedAt = now;
+    // The money was taken: refund all of what Stripe received (PAY-03), sent to Stripe after the commit.
+    await this.refunds.createInTransaction(
+      payment,
+      {
+        paidMinor: actualAmount,
+        percentage: 100,
+        reason: paymentMatches ? RefundReason.LATE_PAYMENT : RefundReason.PAYMENT_MISMATCH,
+      },
+      session,
+    );
     payment.lastFailureCode = reason;
     await this.persistPayment(payment, session);
   }
@@ -887,9 +857,11 @@ export class PaymentsService {
   ) {
     const object = event.data.object as unknown as Record<string, any>;
     let payment: Payment | null = null;
-    if (event.type.startsWith('payment_intent.') && typeof object.id === 'string') {
+    // payment_intent.*: the object IS the intent. refund.* and charge.refunded: it names the intent.
+    const intentId = event.type.startsWith('payment_intent.') ? object.id : object.payment_intent;
+    if (typeof intentId === 'string') {
       payment = await this.paymentModel
-        .findOne({ stripePaymentIntentId: object.id })
+        .findOne({ stripePaymentIntentId: intentId })
         .session(session)
         .exec();
     }
@@ -900,91 +872,6 @@ export class PaymentsService {
         .findById(metadataPaymentId)
         .session(session)
         .exec();
-    }
-    return payment;
-  }
-
-  private async applyRefundUpdate(
-    refund: Record<string, any>,
-    payment: Payment,
-    session: ClientSession,
-  ) {
-    if (
-      payment.stripeRefundId &&
-      refund.id !== payment.stripeRefundId
-    ) {
-      return;
-    }
-    if (refund.status === 'succeeded') {
-      payment.stripeRefundId = refund.id;
-      payment.refundAmountMinor = Number(refund.amount ?? payment.refundAmountMinor);
-      payment.refundStatus = RefundStatus.SUCCEEDED;
-      payment.refundedAt = new Date();
-      payment.status =
-        payment.refundAmountMinor >= payment.amountMinor
-          ? PaymentStatus.REFUNDED
-          : PaymentStatus.PARTIALLY_REFUNDED;
-    } else if (refund.status === 'failed' || refund.status === 'canceled') {
-      payment.stripeRefundId = refund.id;
-      payment.refundStatus = RefundStatus.FAILED;
-      payment.status = PaymentStatus.REFUND_FAILED;
-    } else {
-      payment.refundStatus = RefundStatus.PROCESSING;
-      payment.status = PaymentStatus.REFUND_PENDING;
-    }
-    await this.persistPayment(payment, session);
-  }
-
-  private async processRefund(payment: Payment): Promise<Payment> {
-    if (
-      payment.refundAmountMinor <= 0 ||
-      payment.refundStatus === RefundStatus.SUCCEEDED ||
-      payment.refundStatus === RefundStatus.NOT_REQUIRED
-    ) {
-      return payment;
-    }
-    if (!payment.stripePaymentIntentId) {
-      payment.refundStatus = RefundStatus.FAILED;
-      payment.status = PaymentStatus.REFUND_FAILED;
-      payment.lastFailureCode = 'missing_payment_intent';
-      await this.persistPayment(payment);
-      return payment;
-    }
-
-    try {
-      const refund = await this.stripeService.createRefund({
-        paymentIntentId: payment.stripePaymentIntentId,
-        amountMinor: payment.refundAmountMinor,
-        paymentId: payment._id.toString(),
-        refundId: payment._id.toString(),
-        reason: 'booking_cancellation_or_expired_hold',
-      });
-      payment.stripeRefundId = refund.id;
-      payment.refundAmountMinor = refund.amount;
-      payment.refundStatus =
-        refund.status === 'succeeded'
-          ? RefundStatus.SUCCEEDED
-          : refund.status === 'failed' || refund.status === 'canceled'
-            ? RefundStatus.FAILED
-            : RefundStatus.PROCESSING;
-      payment.status =
-        payment.refundStatus === RefundStatus.SUCCEEDED
-          ? payment.refundAmountMinor >= payment.amountMinor
-            ? PaymentStatus.REFUNDED
-            : PaymentStatus.PARTIALLY_REFUNDED
-          : payment.refundStatus === RefundStatus.FAILED
-            ? PaymentStatus.REFUND_FAILED
-            : PaymentStatus.REFUND_PENDING;
-      if (payment.refundStatus === RefundStatus.SUCCEEDED) {
-        payment.refundedAt = new Date();
-      }
-      payment.lastFailureCode = undefined;
-      await this.persistPayment(payment);
-    } catch {
-      payment.refundStatus = RefundStatus.PENDING;
-      payment.status = PaymentStatus.REFUND_PENDING;
-      payment.lastFailureCode = 'stripe_refund_request_failed';
-      await this.persistPayment(payment);
     }
     return payment;
   }
@@ -1238,12 +1125,6 @@ export class PaymentsService {
       'holdExpiresAt',
       'stripePaymentIntentId',
       'lastFailureCode',
-      'refundAmountMinor',
-      'refundPercentage',
-      'refundStatus',
-      'stripeRefundId',
-      'refundRequestedAt',
-      'refundedAt',
     ] as const;
     const set: Record<string, unknown> = {};
     const unset: Record<string, 1> = {};

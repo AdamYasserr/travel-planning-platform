@@ -27,6 +27,7 @@ import { ItinerariesService } from './modules/itineraries/itineraries.service';
 import { PaymentsController } from './modules/payments/payments.controller';
 import { RefundsController } from './modules/payments/refunds.controller';
 import { PaymentsService } from './modules/payments/payments.service';
+import { RefundsService } from './modules/payments/refunds.service';
 
 /** Stands in for the real JWT guard: `x-test-user: <id>:<role>` authenticates, no header = 401. */
 @Injectable()
@@ -57,7 +58,8 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
     'updateBudgetEntryById', 'removeBudgetEntryById', 'updateTransportCostById', 'removeTransportCostById',
     'updateActivity', 'removeActivity', 'updateBudgetEntry', 'removeBudgetEntry', 'updateTransportCost', 'removeTransportCost',
   ]);
-  const payments = mock(['getForUser', 'getRefundForUser', 'handleStripeWebhook']);
+  const payments = mock(['getForUser', 'handleStripeWebhook']);
+  const refunds = mock(['getForViewer']);
   const hotels = mock(['update', 'getRoomStatuses']);
   const auth = mock(['changePassword']);
 
@@ -72,6 +74,7 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
         { provide: HotelBookingsService, useValue: hotelBookings },
         { provide: ItinerariesService, useValue: itineraries },
         { provide: PaymentsService, useValue: payments },
+        { provide: RefundsService, useValue: refunds },
         { provide: HotelsService, useValue: hotels },
         { provide: HotelSearchService, useValue: {} },
         { provide: AuthService, useValue: auth },
@@ -216,9 +219,9 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
     });
     it('GET /refunds/:id is owner-scoped and requires authentication', async () => {
       expect((await http.get('/api/refunds/p1').set('x-test-user', user)).status).toBe(200);
-      expect(payments.getRefundForUser).toHaveBeenCalledWith('user-1', 'p1');
+      expect(refunds.getForViewer).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1', role: 'user' }), 'p1');
       expect((await http.get('/api/refunds/p1')).status).toBe(401);
-      payments.getRefundForUser.mockRejectedValueOnce(new NotFoundException('No refund exists for this payment') as never);
+      refunds.getForViewer.mockRejectedValueOnce(new NotFoundException('Refund not found') as never);
       expect((await http.get('/api/refunds/p2').set('x-test-user', user)).status).toBe(404);
     });
   });

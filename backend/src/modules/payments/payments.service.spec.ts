@@ -7,7 +7,8 @@ import {
   PaymentBookingType,
   PaymentStatus,
 } from './enums/payment-status.enum';
-import { RefundStatus } from './enums/refund-status.enum';
+import { refundAmountFor } from './refund-state';
+import { RefundReason } from './schemas/refund.schema';
 import { PaymentsService } from './payments.service';
 import { isTestConfirmEnabled } from './test-mode';
 
@@ -42,6 +43,10 @@ describe('PaymentsService', () => {
   let payment: Record<string, any>;
   let hotelBooking: Record<string, any>;
   let flightBooking: Record<string, any>;
+  /** The refunds collaborator (RefundsService): a refund is opened in the transaction, sent to Stripe after it. */
+  let refunds: Record<string, ReturnType<typeof jest.fn>>;
+  let openedRefund: Record<string, any> | null;
+  const refundObjectId = new Types.ObjectId();
 
   function makeService() {
     service = new PaymentsService(
@@ -54,6 +59,7 @@ describe('PaymentsService', () => {
       stripeService as never,
       { code: 'EGP' } as never,
       { get: (key: string) => configValues[key] } as never,
+      refunds as never,
     );
   }
 
@@ -78,9 +84,6 @@ describe('PaymentsService', () => {
       status: PaymentStatus.PENDING,
       holdExpiresAt: new Date(Date.now() + 10 * 60_000),
       stripePaymentIntentId: undefined,
-      refundAmountMinor: 0,
-      refundPercentage: 0,
-      refundStatus: RefundStatus.NOT_REQUIRED,
     };
     hotelBooking = {
       _id: bookingId,
@@ -165,6 +168,21 @@ describe('PaymentsService', () => {
         amount: 20000,
         status: 'succeeded',
       })),
+    };
+    openedRefund = null;
+    refunds = {
+      createInTransaction: jest.fn(async (pay: any, input: any) => {
+        const amountMinor = refundAmountFor(input.paidMinor, input.percentage);
+        if (!amountMinor) return null;
+        openedRefund = { _id: refundObjectId, amountMinor, percentage: input.percentage, reason: input.reason, status: 'Pending' };
+        pay.status = PaymentStatus.REFUND_PENDING;
+        pay.refundId = refundObjectId;
+        return openedRefund;
+      }),
+      process: jest.fn(async () => null),
+      processForPayment: jest.fn(async () => null),
+      findForPayment: jest.fn(async () => openedRefund),
+      retryPending: jest.fn(async () => []),
     };
     connection = {
       startSession: jest.fn(async () => ({
@@ -375,7 +393,7 @@ describe('PaymentsService', () => {
       await hookWith(succeededIntent());
       expect(hotelBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
       expect(payment.status).toBe(PaymentStatus.PENDING);
-      expect(stripeService.createRefund).not.toHaveBeenCalled();
+      expect(refunds.createInTransaction).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -390,9 +408,16 @@ describe('PaymentsService', () => {
         expect.anything(),
       );
       expect(payment.status).not.toBe(PaymentStatus.SUCCEEDED);
-      // The existing refund path returns the money straight away (it clears the failure code once refunded).
-      expect(stripeService.createRefund).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: intentId }));
-      expect(payment.refundPercentage).toBe(100);
+      // All of what Stripe received is refunded (PAY-03), and sent to Stripe after the commit.
+      const received = 'amount' in over ? 100 : 20000;
+      expect(refunds.createInTransaction).toHaveBeenCalledWith(
+        payment,
+        { paidMinor: received, percentage: 100, reason: RefundReason.PAYMENT_MISMATCH },
+        expect.anything(),
+      );
+      expect(payment.status).toBe(PaymentStatus.REFUND_PENDING);
+      expect(payment.lastFailureCode).toBe('payment_amount_or_currency_mismatch');
+      expect(refunds.processForPayment).toHaveBeenCalledWith(paymentId);
     });
 
     it('records payment failures without confirming the booking', async () => {
@@ -414,7 +439,7 @@ describe('PaymentsService', () => {
       webhookEventModel.findOne = jest.fn(() => query({ paymentId, status: 'Processed' }));
       await hookWith(succeededIntent());
       expect(hotelBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
-      expect(stripeService.createRefund).not.toHaveBeenCalled();
+      expect(refunds.createInTransaction).not.toHaveBeenCalled();
     });
 
     it('does not confirm a success that arrives after the hold expired; the money is flagged for refund', async () => {
@@ -424,10 +449,14 @@ describe('PaymentsService', () => {
       await hookWith(succeededIntent());
 
       expect(hotelBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
-      expect(stripeService.createRefund).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentIntentId: intentId, amountMinor: 20000 }),
+      expect(refunds.createInTransaction).toHaveBeenCalledWith(
+        payment,
+        { paidMinor: 20000, percentage: 100, reason: RefundReason.LATE_PAYMENT },
+        expect.anything(),
       );
-      expect(payment.status).toBe(PaymentStatus.REFUNDED);
+      expect(payment.status).toBe(PaymentStatus.REFUND_PENDING);
+      expect(payment.lastFailureCode).toBe('succeeded_after_hold_expiry');
+      expect(refunds.processForPayment).toHaveBeenCalledWith(paymentId);
     });
 
     it('expires the flight hold and restores seats before refunding a late payment', async () => {
@@ -444,7 +473,7 @@ describe('PaymentsService', () => {
         { $inc: { availableSeats: 2 } },
         expect.objectContaining({ session: expect.anything() }),
       );
-      expect(stripeService.createRefund).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: intentId }));
+      expect(refunds.createInTransaction).toHaveBeenCalledWith(payment, expect.objectContaining({ percentage: 100 }), expect.anything());
       expect(flightBookingModel.findOneAndUpdate).not.toHaveBeenCalledWith(
         expect.objectContaining({ status: FlightBookingStatus.PENDING_PAYMENT }),
         expect.objectContaining({ $set: expect.objectContaining({ status: FlightBookingStatus.CONFIRMED }) }),
@@ -453,7 +482,7 @@ describe('PaymentsService', () => {
     });
   });
 
-  it('applies hotel cancellation tiers and records Stripe refund results', async () => {
+  it('applies hotel cancellation tiers and opens one refund for that share', async () => {
     const checkInDate = new Date(Date.now() + 60 * 86_400_000);
     hotelBooking.status = HotelBookingStatus.CONFIRMED;
     hotelBooking.checkInDate = checkInDate;
@@ -463,11 +492,6 @@ describe('PaymentsService', () => {
     ];
     payment.status = PaymentStatus.SUCCEEDED;
     payment.stripePaymentIntentId = 'pi_test_1';
-    stripeService.createRefund = jest.fn(async () => ({
-      id: 're_test_partial',
-      amount: 10000,
-      status: 'succeeded',
-    }));
 
     const result = await service.cancelBooking(
       userId.toString(),
@@ -476,19 +500,33 @@ describe('PaymentsService', () => {
     );
 
     expect(result.refundPercentage).toBe(50);
-    expect(result.refundId).toBe(paymentId.toString()); // use with GET /refunds/:id
-    expect(stripeService.createRefund).toHaveBeenCalledWith(
-      expect.objectContaining({ amountMinor: 10000 }),
+    expect(result.refundId).toBe(refundObjectId.toString()); // the Refund's own id, for GET /refunds/:id
+    expect(refunds.createInTransaction).toHaveBeenCalledWith(
+      payment,
+      { paidMinor: 20000, percentage: 50, reason: RefundReason.BOOKING_CANCELLED },
+      expect.anything(),
     );
-    expect(payment.refundAmountMinor).toBe(10000);
-    expect(payment.refundStatus).toBe(RefundStatus.SUCCEEDED);
-    expect(payment.status).toBe(PaymentStatus.PARTIALLY_REFUNDED);
+    expect(openedRefund?.amountMinor).toBe(10000);
+    expect(refunds.process).toHaveBeenCalledWith(refundObjectId.toString());
+    expect(payment.status).toBe(PaymentStatus.REFUND_PENDING);
+  });
+
+  it('a 0% tier cancels the booking but opens no refund', async () => {
+    hotelBooking.status = HotelBookingStatus.CONFIRMED;
+    hotelBooking.cancellationTiers = [{ daysBeforeCheckIn: 0, refundPercentage: 0 }];
+    payment.status = PaymentStatus.SUCCEEDED;
+
+    const result = await service.cancelBooking(userId.toString(), PaymentBookingType.HOTEL, bookingId.toString());
+
+    expect(result.refundPercentage).toBe(0);
+    expect(result.refundId).toBeNull();
+    expect(refunds.process).not.toHaveBeenCalled();
+    expect(payment.status).toBe(PaymentStatus.SUCCEEDED);
   });
 
   it('rejects cancelling an already-cancelled booking (409) and issues no second refund', async () => {
     hotelBooking.status = HotelBookingStatus.CANCELLED;
     payment.status = PaymentStatus.REFUNDED;
-    payment.refundStatus = RefundStatus.SUCCEEDED;
 
     await expect(
       service.cancelBooking(
@@ -498,7 +536,7 @@ describe('PaymentsService', () => {
       ),
     ).rejects.toThrow(/already cancelled/i);
 
-    expect(stripeService.createRefund).not.toHaveBeenCalled();
+    expect(refunds.createInTransaction).not.toHaveBeenCalled();
     expect(hotelBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
@@ -521,7 +559,7 @@ describe('PaymentsService', () => {
       { $inc: { availableSeats: 2 } },
       expect.objectContaining({ session: expect.anything() }),
     );
-    expect(stripeService.createRefund).not.toHaveBeenCalled();
+    expect(refunds.createInTransaction).not.toHaveBeenCalled();
   });
 
   it('does not invent a flight refund when the booking has no policy snapshot', async () => {
@@ -537,7 +575,7 @@ describe('PaymentsService', () => {
       ),
     ).rejects.toThrow('The airline cancellation policy is not configured');
     expect(flightBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
-    expect(stripeService.createRefund).not.toHaveBeenCalled();
+    expect(refunds.createInTransaction).not.toHaveBeenCalled();
   });
 
   it('releases an unpaid hold as Expired (not Cancelled) and cancels the PaymentIntent', async () => {
@@ -588,7 +626,7 @@ describe('PaymentsService', () => {
       ),
     ).rejects.toThrow('cannot be cancelled after departure');
     expect(flightBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
-    expect(stripeService.createRefund).not.toHaveBeenCalled();
+    expect(refunds.createInTransaction).not.toHaveBeenCalled();
   });
 
   describe('completeFinishedBookings (GEN-11)', () => {
@@ -614,12 +652,11 @@ describe('PaymentsService', () => {
     });
   });
 
-  describe('refund id (GET /refunds/:id uses the payment id)', () => {
-    it('GET /payments/:id returns refundId equal to the payment id once a refund exists', async () => {
-      payment.refundStatus = RefundStatus.PENDING;
-      payment.refundAmountMinor = 10000;
+  describe('refund id (GET /refunds/:id uses the Refund record id)', () => {
+    it('GET /payments/:id returns the refund id and status once a refund exists', async () => {
+      openedRefund = { _id: refundObjectId, status: 'Refunded', percentage: 50, amountMinor: 10000 };
       const result: any = await service.getForUser(userId.toString(), paymentId.toString());
-      expect(result.refundId).toBe(paymentId.toString());
+      expect(result).toMatchObject({ refundId: refundObjectId.toString(), refundStatus: 'Refunded', refundPercentage: 50, refundAmountMinor: 10000 });
     });
 
     it('refundId is null when no refund applies', async () => {
@@ -636,30 +673,9 @@ describe('PaymentsService', () => {
       expect(result.refundId).toBeNull();
     });
 
-    it('getRefundForUser returns the refund view keyed by that id', async () => {
-      payment.refundStatus = RefundStatus.SUCCEEDED;
-      payment.refundPercentage = 50;
-      payment.refundAmountMinor = 10000;
-      payment.refundedAt = new Date('2030-01-01');
-      const refund = await service.getRefundForUser(userId.toString(), paymentId.toString());
-      expect(refund).toEqual({
-        refundId: paymentId.toString(),
-        paymentId: paymentId.toString(),
-        bookingType: PaymentBookingType.HOTEL,
-        bookingId,
-        status: RefundStatus.SUCCEEDED,
-        percentage: 50,
-        amountMinor: 10000,
-        currency: 'egp',
-        requestedAt: null,
-        refundedAt: new Date('2030-01-01'),
-      });
-    });
-
-    it('getRefundForUser is 404 when the payment has no refund or is not yours', async () => {
-      await expect(service.getRefundForUser(userId.toString(), paymentId.toString())).rejects.toThrow('No refund exists for this payment');
-      paymentModel.findOne = jest.fn(() => query(null));
-      await expect(service.getRefundForUser(new Types.ObjectId().toString(), paymentId.toString())).rejects.toThrow('Payment not found');
+    it('the retry job delegates to the leased RefundsService.retryPending', async () => {
+      await service.retryPendingRefunds();
+      expect(refunds.retryPending).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -9,7 +9,6 @@ import {
   PaymentBookingType,
   PaymentStatus,
 } from '../enums/payment-status.enum';
-import { RefundStatus } from '../enums/refund-status.enum';
 
 export type PaymentDocument = HydratedDocument<Payment>;
 
@@ -62,27 +61,9 @@ export class Payment {
   @Prop({ type: String, default: undefined })
   lastFailureCode?: string;
 
-  @Prop({ type: Number, default: 0, min: 0 })
-  refundAmountMinor: number;
-
-  @Prop({ type: Number, default: 0, min: 0, max: 100 })
-  refundPercentage: number;
-
-  @Prop({
-    type: String,
-    enum: Object.values(RefundStatus),
-    default: RefundStatus.NOT_REQUIRED,
-  })
-  refundStatus: RefundStatus;
-
-  @Prop({ type: String, default: undefined, unique: true, sparse: true })
-  stripeRefundId?: string;
-
-  @Prop({ type: Date, default: null })
-  refundRequestedAt?: Date | null;
-
-  @Prop({ type: Date, default: null })
-  refundedAt?: Date | null;
+  /** PAY-03: the Refund record of this payment (at most one), or null. */
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Refund', default: null })
+  refundId?: Types.ObjectId | null;
 }
 
 export const PaymentSchema = SchemaFactory.createForClass(Payment);

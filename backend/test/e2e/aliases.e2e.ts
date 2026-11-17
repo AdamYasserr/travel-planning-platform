@@ -255,21 +255,25 @@ describe('PDF route aliases return the same as the original routes (Section 8)',
       const paymentId = await confirmBooking(ctx, user, 'hotel', hold.body._id);
 
       // paid, nothing refunded yet
-      expect((await user.agent.get(`/api/refunds/${paymentId}`)).status).toBe(404);
       expect((await user.agent.get(`/api/payments/${paymentId}`)).body.refundId).toBeNull();
 
       const cancel = await user.agent.post(`/api/hotel-bookings/${hold.body._id}/cancel`);
       expect(cancel.status).toBe(200);
-      expect(cancel.body.refundId).toBe(paymentId);
-      expect((await user.agent.get(`/api/payments/${paymentId}`)).body.refundId).toBe(paymentId);
+      // PAY-03: the refund is its own record with its own id (not the payment id).
+      const refundId = cancel.body.refundId;
+      expect(refundId).toEqual(expect.any(String));
+      expect(refundId).not.toBe(paymentId);
+      expect((await user.agent.get(`/api/payments/${paymentId}`)).body.refundId).toBe(refundId);
 
-      const refund = await user.agent.get(`/api/refunds/${cancel.body.refundId}`);
+      const refund = await user.agent.get(`/api/refunds/${refundId}`);
       expect(refund.status).toBe(200);
-      expect(JSON.stringify(refund.body)).toContain(paymentId);
+      expect(refund.body.paymentId).toBe(paymentId);
       expect(ctx.stripe.refunds.some((r) => r.paymentId === paymentId)).toBe(true);
+      // a payment id is not a refund id
+      expect((await user.agent.get(`/api/refunds/${paymentId}`)).status).toBe(404);
 
-      expect((await stranger.agent.get(`/api/refunds/${paymentId}`)).status).toBe(404);
-      expect((await ctx.http().get(`/api/refunds/${paymentId}`)).status).toBe(401);
+      expect((await stranger.agent.get(`/api/refunds/${refundId}`)).status).toBe(404);
+      expect((await ctx.http().get(`/api/refunds/${refundId}`)).status).toBe(401);
     });
 
     it('GET /refunds/:id is 404 for an unpaid hold released as Expired (no refund id)', async () => {

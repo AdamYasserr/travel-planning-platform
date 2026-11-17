@@ -83,9 +83,61 @@ export class StripeFake {
     return { id: paymentIntentId, status: 'canceled' };
   }
 
-  async createRefund(input: { paymentIntentId: string; amountMinor: number; paymentId: string }) {
+  /**
+   * Outcome of the next createRefund calls (FIFO); default `succeeded`. `error` throws like a network or
+   * API error (the refund stays Pending for the retry job). Like Stripe, the same payment (idempotency key
+   * `refund-<paymentId>`) always gets the same refund back.
+   */
+  readonly nextRefundOutcomes: Array<'succeeded' | 'pending' | 'failed' | 'error'> = [];
+  readonly stripeRefunds = new Map<string, { id: string; payment_intent: string; amount: number; status: string; metadata: Record<string, string> }>();
+  private readonly refundByPayment = new Map<string, string>();
+
+  async createRefund(input: { paymentIntentId: string; amountMinor: number; paymentId: string; refundId?: string; reason?: string }) {
     this.refunds.push({ paymentIntentId: input.paymentIntentId, amountMinor: input.amountMinor, paymentId: input.paymentId });
-    return { id: `re_test_${++this.counter}`, amount: input.amountMinor, status: 'succeeded' };
+    const outcome = this.nextRefundOutcomes.shift() ?? 'succeeded';
+    if (outcome === 'error') throw new Error('Stripe is unreachable');
+    const known = this.refundByPayment.get(input.paymentId);
+    if (known) return this.stripeRefunds.get(known)!;
+    const refund = {
+      id: `re_test_${++this.counter}`,
+      payment_intent: input.paymentIntentId,
+      amount: input.amountMinor,
+      status: outcome,
+      metadata: { paymentId: input.paymentId, refundId: input.refundId ?? '' },
+      ...(outcome === 'failed' ? { failure_reason: 'expired_or_canceled_card' } : {}),
+    };
+    this.stripeRefunds.set(refund.id, refund);
+    this.refundByPayment.set(input.paymentId, refund.id);
+    return refund;
+  }
+
+  /** The Stripe refund created for a payment (by our payment id). */
+  stripeRefundFor(paymentId: string) {
+    const id = this.refundByPayment.get(paymentId);
+    return id ? this.stripeRefunds.get(id) : undefined;
+  }
+
+  /** `refund.updated` (or `refund.failed`) for a refund Stripe created; it moves to `status`. */
+  refundEvent(stripeRefundId: string, status: 'succeeded' | 'failed' | 'pending', options: { type?: 'refund.updated' | 'refund.failed'; eventId?: string } = {}) {
+    const refund = this.stripeRefunds.get(stripeRefundId);
+    if (!refund) throw new Error(`No such refund: ${stripeRefundId}`);
+    refund.status = status;
+    return {
+      id: options.eventId ?? `evt_test_${++this.counter}`,
+      object: 'event',
+      type: options.type ?? (status === 'failed' ? 'refund.failed' : 'refund.updated'),
+      data: { object: { ...refund, object: 'refund', ...(status === 'failed' ? { failure_reason: 'expired_or_canceled_card' } : {}) } },
+    };
+  }
+
+  /** `charge.refunded` for the charge of a PaymentIntent. */
+  chargeRefundedEvent(paymentIntentId: string, amountRefunded: number, stripeRefundId?: string) {
+    return {
+      id: `evt_test_${++this.counter}`,
+      object: 'event',
+      type: 'charge.refunded',
+      data: { object: { id: `ch_test_${++this.counter}`, object: 'charge', payment_intent: paymentIntentId, amount_refunded: amountRefunded, refunds: { data: stripeRefundId ? [{ id: stripeRefundId }] : [] } } },
+    };
   }
 
   /** The PaymentIntent id inside a client secret (`pi_xxx_secret_yyy`), as Stripe Elements would derive it. */
