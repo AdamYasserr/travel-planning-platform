@@ -1,3 +1,4 @@
+
 import * as Joi from 'joi';
 
 export const envValidationSchema = Joi.object({
@@ -26,22 +27,33 @@ export const envValidationSchema = Joi.object({
   STRIPE_SECRET_KEY: Joi.string().optional().allow(''),
   STRIPE_WEBHOOK_SECRET: Joi.string().optional().allow(''),
 
+  PAYMENT_CURRENCY: Joi.string()
+    .length(3)
+    .default('egp'),
+
   FXRATES_API_KEY: Joi.string().optional().allow(''),
   FXRATES_BASE_URL: Joi.string()
     .uri()
     .default('https://api.fxratesapi.com'),
   FXRATES_CACHE_TTL_MS: Joi.number().integer().min(1000).default(900000),
   FXRATES_STALE_TTL_MS: Joi.number().integer().min(1000).default(86400000),
-  MEDIA_STORAGE_PATH: Joi.string().default('uploads/media'),
-}).custom((value: {
-  FXRATES_CACHE_TTL_MS: number;
-  FXRATES_STALE_TTL_MS: number;
-}, helpers: Joi.CustomHelpers) => {
-  if (
-    value.FXRATES_STALE_TTL_MS < value.FXRATES_CACHE_TTL_MS
-  ) {
-    return helpers.error('any.invalid');
-  }
 
-  return value;
-}, 'FX rates cache window validation');
+  MEDIA_STORAGE_PATH: Joi.string().default('uploads/media'),
+}).custom(
+  (
+    value: {
+      FXRATES_CACHE_TTL_MS: number;
+      FXRATES_STALE_TTL_MS: number;
+    },
+    helpers: Joi.CustomHelpers,
+  ) => {
+    if (
+      value.FXRATES_STALE_TTL_MS < value.FXRATES_CACHE_TTL_MS
+    ) {
+      return helpers.error('any.invalid');
+    }
+
+    return value;
+  },
+  'FX rates cache window validation',
+);
