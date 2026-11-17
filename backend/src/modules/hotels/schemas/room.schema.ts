@@ -119,6 +119,14 @@ export class Room {
 
   @Prop({ type: Boolean, default: true, index: true })
   isActive: boolean;
+
+  /**
+   * HTL-18 concurrency token. Every transaction that reserves, blocks, re-opens or removes
+   * a room increments it, so two such transactions on the same room always write the same
+   * document and MongoDB aborts one of them (write conflict) instead of letting both commit.
+   */
+  @Prop({ type: Number, default: 0 })
+  holdSeq: number;
 }
 
 export const RoomSchema = SchemaFactory.createForClass(Room);

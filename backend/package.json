@@ -19,6 +19,7 @@
     "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:integration": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.integration.config.ts",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:reference": "ts-node -r dotenv/config -r tsconfig-paths/register src/database/seeders/reference-data.seeder.ts"
   },
@@ -62,6 +63,7 @@
     "@types/passport-jwt": "^4.0.1",
     "@types/supertest": "^7.0.0",
     "jest": "^30.0.0",
+    "mongodb-memory-server": "^11.3.0",
     "oxlint": "^1.58.0",
     "prettier": "^3.4.2",
     "source-map-support": "^0.5.21",

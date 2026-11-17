@@ -20,7 +20,7 @@ describe('HotelsService reference validation (GEN-12)', () => {
     cities.findOne.mockImplementation(() => lean({ countryCode: 'EG' }));
     hotelModel = { create: jest.fn(async (d: any) => d) };
     const refs = new ReferenceValidationService(countries as never, cities as never, airports as never);
-    service = new HotelsService(hotelModel as never, {} as never, {} as never, {} as never, {} as never, refs, currencies as never);
+    service = new HotelsService(hotelModel as never, {} as never, {} as never, {} as never, {} as never, refs, currencies as never, {} as never);
   });
 
   const dto = { name: 'Nile Hotel', address: '1 Corniche', cityId: 'cairo', countryId: 'EG', description: '' } as any;

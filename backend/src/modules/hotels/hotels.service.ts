@@ -5,7 +5,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import type { Connection } from 'mongoose';
 import { Model, Types } from 'mongoose';
 
 import {
@@ -25,6 +26,8 @@ import { UserRole } from '../../common/enums/user-role.enum';
 import { Review } from './schemas/review.schema';
 import { ReferenceValidationService } from '../reference-data/reference-validation.service';
 import { SupportedCurrenciesService } from '../reference-data/supported-currencies.service';
+import { runBookingTransaction } from '../../common/booking/booking-transaction';
+import { activeReservationClause } from '../hotel-bookings/room-reservation.util';
 import {
   HotelBooking,
   HotelBookingStatus,
@@ -45,6 +48,8 @@ export class HotelsService {
     private readonly reviewModel: Model<Review>,
     private readonly references: ReferenceValidationService,
     private readonly currencies: SupportedCurrenciesService,
+    @InjectConnection()
+    private readonly connection: Connection,
   ) {}
 
   async create(dto: CreateHotelDto) {
@@ -457,55 +462,61 @@ async setRoomAvailability(
   const roomObjectId = new Types.ObjectId(roomId);
   const hotelObjectId = new Types.ObjectId(normalizedHotelId);
 
-  const room = await this.roomModel
-    .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
-    .exec();
-
-  if (!room) {
-    throw new NotFoundException('Room not found in this hotel');
-  }
-
   const newRanges = dto.availabilityRanges.map((range) => ({
     startDate: new Date(`${range.startDate}T00:00:00.000Z`),
     endDate: new Date(`${range.endDate}T00:00:00.000Z`),
   }));
 
-  const confirmedBookings = await this.hotelBookingModel
-    .find({
-      'rooms.roomId': roomObjectId,
-      status: HotelBookingStatus.CONFIRMED,
-    })
-    .select({ checkInDate: 1, checkOutDate: 1 })
-    .lean()
-    .exec();
+  return runBookingTransaction(this.connection, async (session) => {
+    const room = await this.roomModel
+      .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+      .session(session)
+      .exec();
 
-  const wouldRemoveConfirmedStay = confirmedBookings.some((booking) => {
-    return !this.isStayCoveredByRanges(
-      newRanges,
-      booking.checkInDate,
-      booking.checkOutDate,
+    if (!room) {
+      throw new NotFoundException('Room not found in this hotel');
+    }
+
+    // Confirmed stays and unexpired holds must remain fully covered by the new ranges.
+    const activeBookings = await this.hotelBookingModel
+      .find({
+        'rooms.roomId': roomObjectId,
+        $or: activeReservationClause(new Date()),
+      })
+      .select({ checkInDate: 1, checkOutDate: 1 })
+      .session(session)
+      .lean()
+      .exec();
+
+    const wouldRemoveReservedStay = activeBookings.some(
+      (booking) =>
+        !this.isStayCoveredByRanges(
+          newRanges,
+          booking.checkInDate,
+          booking.checkOutDate,
+        ),
     );
+
+    if (wouldRemoveReservedStay) {
+      throw new ConflictException(
+        'Availability cannot be removed for dates with a confirmed or active pending reservation',
+      );
+    }
+
+    const updatedRoom = await this.roomModel
+      .findOneAndUpdate(
+        { _id: roomObjectId, hotelId: hotelObjectId },
+        { $set: { availabilityRanges: newRanges }, $inc: { holdSeq: 1 } },
+        { new: true, runValidators: true, session },
+      )
+      .exec();
+
+    if (!updatedRoom) {
+      throw new NotFoundException('Room not found in this hotel');
+    }
+
+    return updatedRoom;
   });
-
-  if (wouldRemoveConfirmedStay) {
-    throw new ConflictException(
-      'Availability cannot be removed for dates with a confirmed reservation',
-    );
-  }
-
-  const updatedRoom = await this.roomModel
-    .findOneAndUpdate(
-      { _id: roomObjectId, hotelId: hotelObjectId },
-      { $set: { availabilityRanges: newRanges } },
-      { new: true, runValidators: true },
-    )
-    .exec();
-
-  if (!updatedRoom) {
-    throw new NotFoundException('Room not found in this hotel');
-  }
-
-  return updatedRoom;
 }
 
 private isStayCoveredByRanges(
@@ -576,92 +587,80 @@ async blockRoomDates(
   const hotelObjectId = new Types.ObjectId(normalizedHotelId);
   const roomObjectId = new Types.ObjectId(roomId);
 
-  const room = await this.roomModel
-    .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
-    .exec();
-
-  if (!room) {
-    throw new NotFoundException('Room not found in this hotel');
-  }
-
   const requestedRanges = dto.blockedRanges.map((range) => ({
     startDate: new Date(`${range.startDate}T00:00:00.000Z`),
     endDate: new Date(`${range.endDate}T00:00:00.000Z`),
   }));
 
-  const now = new Date();
-  const dateOverlapFilters = requestedRanges.map((range) => ({
-    checkInDate: { $lt: range.endDate },
-    checkOutDate: { $gt: range.startDate },
-  }));
+  // HTL-18: check + write in one transaction that also bumps holdSeq, so it cannot race with a hold.
+  return runBookingTransaction(this.connection, async (session) => {
+    const room = await this.roomModel
+      .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+      .session(session)
+      .exec();
 
-  const overlappingReservations = await this.hotelBookingModel
-    .find({
-      'rooms.roomId': roomObjectId,
-      $or: [
-        { status: HotelBookingStatus.CONFIRMED },
-        {
-          status: HotelBookingStatus.PENDING_PAYMENT,
-          holdExpiresAt: { $gt: now },
-        },
-        {
-          status: HotelBookingStatus.PENDING_PAYMENT,
-          holdExpiresAt: null,
-        },
-      ],
-      $and: [{ $or: dateOverlapFilters }],
-    })
-    .select({ _id: 1 })
-    .lean()
-    .exec();
-
-  if (overlappingReservations.length > 0) {
-    throw new ConflictException(
-      'Room dates cannot be blocked while an active reservation overlaps them',
-    );
-  }
-
-  const combinedRanges = [
-    ...room.blockedRanges.map((range) => ({
-      startDate: new Date(range.startDate),
-      endDate: new Date(range.endDate),
-    })),
-    ...requestedRanges,
-  ].sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-
-  const mergedRanges: Array<{ startDate: Date; endDate: Date }> = [];
-
-  for (const range of combinedRanges) {
-    const previous = mergedRanges[mergedRanges.length - 1];
-
-    if (
-      previous &&
-      range.startDate.getTime() <= previous.endDate.getTime()
-    ) {
-      previous.endDate = new Date(
-        Math.max(
-          previous.endDate.getTime(),
-          range.endDate.getTime(),
-        ),
-      );
-    } else {
-      mergedRanges.push({ ...range });
+    if (!room) {
+      throw new NotFoundException('Room not found in this hotel');
     }
-  }
 
-  const updatedRoom = await this.roomModel
-    .findOneAndUpdate(
-      { _id: roomObjectId, hotelId: hotelObjectId },
-      { $set: { blockedRanges: mergedRanges } },
-      { new: true, runValidators: true },
-    )
-    .exec();
+    const dateOverlapFilters = requestedRanges.map((range) => ({
+      checkInDate: { $lt: range.endDate },
+      checkOutDate: { $gt: range.startDate },
+    }));
 
-  if (!updatedRoom) {
-    throw new NotFoundException('Room not found in this hotel');
-  }
+    const overlappingReservations = await this.hotelBookingModel
+      .find({
+        'rooms.roomId': roomObjectId,
+        $or: activeReservationClause(new Date()),
+        $and: [{ $or: dateOverlapFilters }],
+      })
+      .select({ _id: 1 })
+      .session(session)
+      .lean()
+      .exec();
 
-  return updatedRoom;
+    if (overlappingReservations.length > 0) {
+      throw new ConflictException(
+        'Room dates cannot be blocked while an active reservation overlaps them',
+      );
+    }
+
+    const combinedRanges = [
+      ...room.blockedRanges.map((range) => ({
+        startDate: new Date(range.startDate),
+        endDate: new Date(range.endDate),
+      })),
+      ...requestedRanges,
+    ].sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
+
+    const mergedRanges: Array<{ startDate: Date; endDate: Date }> = [];
+
+    for (const range of combinedRanges) {
+      const previous = mergedRanges[mergedRanges.length - 1];
+
+      if (previous && range.startDate.getTime() <= previous.endDate.getTime()) {
+        previous.endDate = new Date(
+          Math.max(previous.endDate.getTime(), range.endDate.getTime()),
+        );
+      } else {
+        mergedRanges.push({ ...range });
+      }
+    }
+
+    const updatedRoom = await this.roomModel
+      .findOneAndUpdate(
+        { _id: roomObjectId, hotelId: hotelObjectId },
+        { $set: { blockedRanges: mergedRanges }, $inc: { holdSeq: 1 } },
+        { new: true, runValidators: true, session },
+      )
+      .exec();
+
+    if (!updatedRoom) {
+      throw new NotFoundException('Room not found in this hotel');
+    }
+
+    return updatedRoom;
+  });
 }
 
 async deactivateRoom(
@@ -695,45 +694,40 @@ async deactivateRoom(
     );
   }
 
-  const room = await this.roomModel
-    .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
-    .exec();
+  return runBookingTransaction(this.connection, async (session) => {
+    const room = await this.roomModel
+      .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+      .session(session)
+      .exec();
 
-  if (!room) {
-    throw new NotFoundException('Room not found in this hotel');
-  }
+    if (!room) {
+      throw new NotFoundException('Room not found in this hotel');
+    }
 
-  const now = new Date();
+    const activeReservation = await this.hotelBookingModel
+      .findOne({
+        'rooms.roomId': roomObjectId,
+        $or: activeReservationClause(new Date()),
+      })
+      .select({ _id: 1 })
+      .session(session)
+      .lean()
+      .exec();
 
-  const activeReservation = await this.hotelBookingModel
-    .findOne({
-      'rooms.roomId': roomObjectId,
-      $or: [
-        { status: HotelBookingStatus.CONFIRMED },
-        {
-          status: HotelBookingStatus.PENDING_PAYMENT,
-          holdExpiresAt: { $gt: now },
-        },
-        {
-          status: HotelBookingStatus.PENDING_PAYMENT,
-          holdExpiresAt: null,
-        },
-      ],
-    })
-    .select({ _id: 1 })
-    .lean()
-    .exec();
+    if (activeReservation) {
+      throw new ConflictException(
+        'A room cannot be deactivated while it has a confirmed or active pending reservation',
+      );
+    }
 
-  if (activeReservation) {
-    throw new ConflictException(
-      'A room cannot be deactivated while it has a confirmed or active pending reservation',
-    );
-  }
-
-  room.isActive = false;
-  await room.save();
-
-  return room;
+    return this.roomModel
+      .findOneAndUpdate(
+        { _id: roomObjectId, hotelId: hotelObjectId },
+        { $set: { isActive: false }, $inc: { holdSeq: 1 } },
+        { new: true, session },
+      )
+      .exec();
+  });
 }
 
 async deleteRoom(
@@ -767,35 +761,39 @@ async deleteRoom(
     );
   }
 
-  const room = await this.roomModel
-    .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
-    .exec();
+  return runBookingTransaction(this.connection, async (session) => {
+    const room = await this.roomModel
+      .findOne({ _id: roomObjectId, hotelId: hotelObjectId })
+      .session(session)
+      .exec();
 
-  if (!room) {
-    throw new NotFoundException('Room not found in this hotel');
-  }
+    if (!room) {
+      throw new NotFoundException('Room not found in this hotel');
+    }
 
-  const reservation = await this.hotelBookingModel
-    .findOne({ 'rooms.roomId': roomObjectId })
-    .select({ _id: 1 })
-    .lean()
-    .exec();
+    const reservation = await this.hotelBookingModel
+      .findOne({ 'rooms.roomId': roomObjectId })
+      .select({ _id: 1 })
+      .session(session)
+      .lean()
+      .exec();
 
-  if (reservation) {
-    throw new ConflictException(
-      'A room cannot be deleted because it has been reserved',
-    );
-  }
+    if (reservation) {
+      throw new ConflictException(
+        'A room cannot be deleted because it has been reserved',
+      );
+    }
 
-  await this.roomModel.deleteOne({
-    _id: roomObjectId,
-    hotelId: hotelObjectId,
-  }).exec();
+    // The delete writes the room document, so it conflicts with a concurrent hold's holdSeq bump.
+    await this.roomModel
+      .deleteOne({ _id: roomObjectId, hotelId: hotelObjectId }, { session })
+      .exec();
 
-  return {
-    message: 'Room deleted successfully',
-    roomId,
-  };
+    return {
+      message: 'Room deleted successfully',
+      roomId,
+    };
+  });
 }
 
 async getRoomStatuses(

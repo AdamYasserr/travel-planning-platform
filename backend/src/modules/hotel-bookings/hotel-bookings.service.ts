@@ -4,8 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
+import type { ClientSession, Connection } from 'mongoose';
 import { Model, Types } from 'mongoose';
 
 import {
@@ -20,8 +21,10 @@ import { Hotel } from '../hotels/schemas/hotel.schema';
 import { Room } from '../hotels/schemas/room.schema';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentBookingType } from '../payments/enums/payment-status.enum';
+import { BOOKING_HOLD_DURATION_MS } from '../../common/booking/booking-hold';
+import { runBookingTransaction } from '../../common/booking/booking-transaction';
+import { activeReservationClause } from './room-reservation.util';
 
-const HOLD_DURATION_MS = 15 * 60 * 1000;
 
 @Injectable()
 export class HotelBookingsService {
@@ -33,6 +36,8 @@ export class HotelBookingsService {
     @InjectModel(Room.name)
     private readonly roomModel: Model<Room>,
     private readonly paymentsService: PaymentsService,
+    @InjectConnection()
+    private readonly connection: Connection,
   ) {}
 
   async create(userId: string, dto: CreateHotelBookingDto) {
@@ -61,20 +66,41 @@ export class HotelBookingsService {
     this.validateGuests(dto.rooms);
 
     const hotelId = new Types.ObjectId(dto.hotelId);
-    const hotel = await this.hotelModel
-      .findOne({ _id: hotelId, isActive: true })
-      .exec();
-    if (!hotel) {
-      throw new NotFoundException('Hotel not found');
-    }
-
     const roomIds = dto.rooms.map((room) => new Types.ObjectId(room.roomId));
     if (new Set(roomIds.map(String)).size !== roomIds.length) {
       throw new BadRequestException('A room can only be booked once per reservation');
     }
 
+    // HTL-18: availability check + hold are one atomic unit (see holdRooms).
+    return runBookingTransaction(this.connection, (session) =>
+      this.holdRooms(session, userId, dto, hotelId, roomIds, checkInDate, checkOutDate),
+    );
+  }
+
+  /**
+   * Runs inside a transaction. Either every selected room is held in ONE Pending Payment
+   * reservation, or an exception aborts the transaction and nothing is written.
+   */
+  private async holdRooms(
+    session: ClientSession,
+    userId: string,
+    dto: CreateHotelBookingDto,
+    hotelId: Types.ObjectId,
+    roomIds: Types.ObjectId[],
+    checkInDate: Date,
+    checkOutDate: Date,
+  ) {
+    const hotel = await this.hotelModel
+      .findOne({ _id: hotelId, isActive: true })
+      .session(session)
+      .exec();
+    if (!hotel) {
+      throw new NotFoundException('Hotel not found');
+    }
+
     const rooms = await this.roomModel
       .find({ _id: { $in: roomIds }, hotelId, isActive: true })
+      .session(session)
       .exec();
     if (rooms.length !== roomIds.length) {
       throw new ConflictException('One or more selected rooms are unavailable');
@@ -95,19 +121,10 @@ export class HotelBookingsService {
         'rooms.roomId': { $in: roomIds },
         checkInDate: { $lt: checkOutDate },
         checkOutDate: { $gt: checkInDate },
-        $or: [
-          { status: HotelBookingStatus.CONFIRMED },
-          {
-            status: HotelBookingStatus.PENDING_PAYMENT,
-            holdExpiresAt: { $gt: now },
-          },
-          {
-            status: HotelBookingStatus.PENDING_PAYMENT,
-            holdExpiresAt: null,
-          },
-        ],
+        $or: activeReservationClause(now),
       })
       .select({ rooms: 1 })
+      .session(session)
       .lean()
       .exec();
     const reservedRoomIds = new Set(
@@ -137,6 +154,12 @@ export class HotelBookingsService {
       }
     }
 
+    // Write conflict point: any concurrent hold/block/availability change on one of these
+    // rooms also bumps holdSeq, so exactly one of the overlapping transactions can commit.
+    await this.roomModel
+      .updateMany({ _id: { $in: roomIds } }, { $inc: { holdSeq: 1 } }, { session })
+      .exec();
+
     const nightCount =
       (checkOutDate.getTime() - checkInDate.getTime()) / 86_400_000;
     const bookingRooms = dto.rooms.map((request) => {
@@ -155,27 +178,33 @@ export class HotelBookingsService {
       0,
     );
 
-    return this.bookingModel.create({
-      userId: new Types.ObjectId(userId),
-      hotelId,
-      checkInDate,
-      checkOutDate,
-      rooms: bookingRooms,
-      totalPrice,
-      currency,
-      status: HotelBookingStatus.PENDING_PAYMENT,
-      holdExpiresAt: new Date(now.getTime() + HOLD_DURATION_MS),
-      reference: `HTL-${randomUUID()}`,
-      policiesAcceptedAt: now,
-      checkInTime: hotel.checkInTime,
-      checkOutTime: hotel.checkOutTime,
-      cancellationTiers: [...(hotel.cancellationTiers ?? [])]
-        .sort((a, b) => b.daysBeforeCheckIn - a.daysBeforeCheckIn)
-        .map((tier) => ({
-          daysBeforeCheckIn: tier.daysBeforeCheckIn,
-          refundPercentage: tier.refundPercentage,
-        })),
-    });
+    const [booking] = await this.bookingModel.create(
+      [
+        {
+          userId: new Types.ObjectId(userId),
+          hotelId,
+          checkInDate,
+          checkOutDate,
+          rooms: bookingRooms,
+          totalPrice,
+          currency,
+          status: HotelBookingStatus.PENDING_PAYMENT,
+          holdExpiresAt: new Date(now.getTime() + BOOKING_HOLD_DURATION_MS),
+          reference: `HTL-${randomUUID()}`,
+          policiesAcceptedAt: now,
+          checkInTime: hotel.checkInTime,
+          checkOutTime: hotel.checkOutTime,
+          cancellationTiers: [...(hotel.cancellationTiers ?? [])]
+            .sort((a, b) => b.daysBeforeCheckIn - a.daysBeforeCheckIn)
+            .map((tier) => ({
+              daysBeforeCheckIn: tier.daysBeforeCheckIn,
+              refundPercentage: tier.refundPercentage,
+            })),
+        },
+      ],
+      { session },
+    );
+    return booking;
   }
 
   async listForUser(userId: string, page = 1, limit = 20) {
