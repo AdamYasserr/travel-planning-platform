@@ -159,4 +159,89 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       }
     });
   });
+  describe('airline view of a flight and the passenger CSV (FLT-29)', () => {
+    const csvOf = (agent: any, flightId: string) => agent.get(`/api/flights/${flightId}/passengers/export`);
+
+    /** A flight with a Confirmed booking of an adult + child + infant, a Pending hold and a Completed booking. */
+    async function bookedFlight() {
+      const f = await createAirlineWithFlight(ctx, { seats: 10, departInDays: 30 });
+      const family = await createUser(ctx);
+      const departure = new Date(`${day(30)}T08:00:00.000Z`);
+      const yearsBefore = (years: number) => `${departure.getUTCFullYear() - years}-01-01`;
+      const familyHold = await holdFlight(family, {
+        flightId: f.flightId,
+        body: { passengers: [
+          { fullName: 'Adult Traveller', dateOfBirth: '1985-03-01' },
+          { fullName: 'Child Traveller', dateOfBirth: yearsBefore(6) },
+          { fullName: 'Infant Traveller', dateOfBirth: yearsBefore(1) },
+        ] },
+      });
+      await confirmBooking(ctx, family, 'flight', familyHold.body._id);
+      const pending = await holdFlight(await createUser(ctx), { flightId: f.flightId });
+      const doneUser = await createUser(ctx);
+      const done = await holdFlight(doneUser, { flightId: f.flightId, body: { passengers: [{ fullName: '=HYPERLINK("http://evil","x")', dateOfBirth: '1990-01-01' }, { fullName: 'Doe, "Jo"', dateOfBirth: '1991-01-01' }] } });
+      await confirmBooking(ctx, doneUser, 'flight', done.body._id);
+      await model('FlightBooking').updateOne({ _id: done.body._id }, { $set: { status: 'Completed' } });
+      return { ...f, familyHold, pending, done };
+    }
+
+    it('lists one row per booking with passengers, cabin, counts by type and booked-at, plus seats left per cabin', async () => {
+      const f = await bookedFlight();
+      const res = await f.moderator.agent.get(`/api/flights/${f.flightId}/bookings`);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ page: 1, limit: 10, total: 3, pages: 1 });
+      expect(res.body.flight).toMatchObject({ id: f.flightId, status: 'Scheduled' });
+      expect(res.body.cabins).toEqual([{ cabinClass: 'Economy', totalSeats: 10, availableSeats: 4 }]);
+      const family = res.body.items.find((i: any) => i.bookingId === f.familyHold.body._id);
+      expect(family).toMatchObject({
+        reference: f.familyHold.body.reference,
+        status: 'Confirmed',
+        cabinClass: 'Economy',
+        passengers: ['Adult Traveller', 'Child Traveller', 'Infant Traveller'],
+        passengerCounts: { adults: 1, children: 1, infants: 1 },
+      });
+      expect(new Date(family.bookedAt).getTime()).toBeGreaterThan(Date.now() - 600_000);
+      const times = res.body.items.map((i: any) => new Date(i.bookedAt).getTime());
+      expect([...times].sort((a, b) => b - a)).toEqual(times);
+    });
+
+    it('filters by status, pages by 10, and rejects an unknown status', async () => {
+      const f = await bookedFlight();
+      const pending = await f.moderator.agent.get(`/api/flights/${f.flightId}/bookings?status=Pending%20Payment`);
+      expect(pending.body.items.map((i: any) => i.bookingId)).toEqual([f.pending.body._id]);
+      expect((await f.moderator.agent.get(`/api/flights/${f.flightId}/bookings?status=Paid`)).status).toBe(400);
+      expect((await f.moderator.agent.get(`/api/flights/${f.flightId}/bookings?limit=101`)).status).toBe(400);
+    });
+
+    it('exports Confirmed and Completed passengers as a CSV attachment, with injection-safe cells', async () => {
+      const f = await bookedFlight();
+      const res = await csvOf(f.moderator.agent, f.flightId);
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/^text\/csv/);
+      expect(res.headers['content-disposition']).toMatch(/^attachment; filename="passengers-[A-Za-z0-9-]+-\d{4}-\d{2}-\d{2}\.csv"$/);
+      const lines = res.text.trimEnd().split('\r\n');
+      expect(lines[0]).toBe('booking_reference,full_name,type,cabin,passport_or_id,nationality,status');
+      expect(lines).toHaveLength(1 + 3 + 2);
+      expect(lines).toContain(`${f.familyHold.body.reference},Child Traveller,child,Economy,,,Confirmed`);
+      expect(lines).toContain(`${f.familyHold.body.reference},Infant Traveller,infant,Economy,,,Confirmed`);
+      expect(lines).toContain(`${f.done.body.reference},"'=HYPERLINK(""http://evil"",""x"")",adult,Economy,,,Completed`);
+      expect(lines).toContain(`${f.done.body.reference},"Doe, ""Jo""",adult,Economy,,,Completed`);
+      expect(res.text).not.toContain(f.pending.body.reference);
+    });
+
+    it.each(['bookings', 'passengers/export'])('%s: another airline\'s moderator, a hotel moderator and a user get 403; signed out 401; admin 200', async (path) => {
+      const f = await createAirlineWithFlight(ctx, { seats: 2 });
+      const other = await createAirlineWithFlight(ctx, { seats: 2 });
+      const { moderator: hotelModerator } = await createHotelWithRooms(ctx, { rooms: 1 });
+      const url = `/api/flights/${f.flightId}/${path}`;
+      expect((await other.moderator.agent.get(url)).status).toBe(403);
+      expect((await hotelModerator.agent.get(url)).status).toBe(403);
+      expect((await (await createUser(ctx)).agent.get(url)).status).toBe(403);
+      expect((await ctx.http().get(url)).status).toBe(401);
+      expect((await (await createUser(ctx, 'admin')).agent.get(url)).status).toBe(200);
+      expect((await f.moderator.agent.get(url)).status).toBe(200);
+      expect((await f.moderator.agent.get(`/api/flights/nope/${path}`)).status).toBe(400);
+      expect((await f.moderator.agent.get(`/api/flights/507f1f77bcf86cd799439011/${path}`)).status).toBe(404);
+    });
+  });
 });

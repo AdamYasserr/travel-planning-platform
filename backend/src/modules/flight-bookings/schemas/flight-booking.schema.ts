@@ -151,3 +151,5 @@ FlightBookingSchema.index(
   { unique: true, sparse: true },
 );
 FlightBookingSchema.index({ flightId: 1, status: 1, holdExpiresAt: 1 });
+// FLT-29: the airline's per-flight list, newest first.
+FlightBookingSchema.index({ flightId: 1, status: 1, createdAt: -1 });

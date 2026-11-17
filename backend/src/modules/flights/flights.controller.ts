@@ -9,6 +9,7 @@ import {
   Query,
   Req,
   Get,
+  StreamableFile,
 } from '@nestjs/common';
 
 import {
@@ -20,6 +21,8 @@ import {
 import type { Request } from 'express';
 
 import { FlightsService } from './flights.service';
+import { FlightManifestService } from './flight-manifest.service';
+import { FlightBookingsQueryDto } from './dto/flight-manifest.dto';
 import { FlightSearchService } from './flight-search.service';
 import { FlightSearchQueryDto } from './dto/flight-search.dto';
 import { Public } from '../../common/decorators/public.decorator';
@@ -45,6 +48,7 @@ export class FlightsController {
   constructor(
     private readonly flightsService: FlightsService,
     private readonly flightSearch: FlightSearchService,
+    private readonly manifest: FlightManifestService,
   ) {}
 
   // FLT-11/12/15: public search. Declared BEFORE ':id' so "search" is not read as a flight id.
@@ -59,6 +63,31 @@ export class FlightsController {
   })
   search(@Query() query: FlightSearchQueryDto) {
     return this.flightSearch.searchFromQuery(query);
+  }
+
+  // FLT-29: the airline's view of a flight (its moderator or an admin).
+  @Get(':id/bookings')
+  @Roles(UserRole.ADMIN, UserRole.MODERATOR)
+  @ApiCookieAuth('access_token')
+  @ApiOperation({
+    summary: 'Bookings on a flight (its airline moderator or an admin)',
+    description: 'FLT-29. One row per booking (reference, status, passengers, cabin, passenger counts by type, booked at), newest first, 10 per page, optional `status` filter; plus the seats left in each cabin. Another airline\'s moderator or a user gets 403.',
+  })
+  bookings(@Param('id') id: string, @Query() query: FlightBookingsQueryDto, @Req() request: AuthenticatedRequest) {
+    return this.manifest.listBookings(request.user.userId, id, query);
+  }
+
+  @Get(':id/passengers/export')
+  @Roles(UserRole.ADMIN, UserRole.MODERATOR)
+  @ApiCookieAuth('access_token')
+  @ApiOperation({
+    summary: 'Passenger list as CSV (its airline moderator or an admin)',
+    description: 'FLT-29. text/csv attachment, one row per passenger of every Confirmed or Completed booking: booking_reference, full_name, type (adult/child/infant on the departure day), cabin, passport_or_id, nationality, status. Cells that could start a spreadsheet formula are prefixed with a single quote.',
+  })
+  async exportPassengers(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
+    const { filename, csv } = await this.manifest.exportPassengers(request.user.userId, id);
+    const body = Buffer.from(csv, 'utf8');
+    return new StreamableFile(body, { type: 'text/csv; charset=utf-8', disposition: `attachment; filename="${filename}"`, length: body.length });
   }
 
   // FLT-17: public flight details (placed after 'search').

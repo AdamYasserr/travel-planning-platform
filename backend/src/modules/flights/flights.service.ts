@@ -57,7 +57,8 @@ private readonly airportModel: Model<Airport>,
   ) {}
 
   // Check airline management permission
-  private async checkPermission(
+  /** Admin, or the moderator of this airline; anyone else is 403. */
+  async checkPermission(
     userId: string,
     airlineId: string,
   ): Promise<void> {

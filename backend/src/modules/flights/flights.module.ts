@@ -30,6 +30,7 @@ import { User, UserSchema } from '../../users/user.schema';
 
 import { FlightsService } from './flights.service';
 import { FlightSearchService } from './flight-search.service';
+import { FlightManifestService } from './flight-manifest.service';
 import { BaggagePolicy, BaggagePolicySchema } from '../airlines/schemas/baggage-policy.schema';
 import { CancellationPolicy, CancellationPolicySchema } from '../airlines/schemas/cancellation-policy.schema';
 import { City, CitySchema } from '../reference-data/schemas/city.schema';
@@ -77,6 +78,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
   providers: [
     FlightsService,
     FlightSearchService,
+    FlightManifestService,
     CabinInventoryService,
     FlightStatusService,
   ],
