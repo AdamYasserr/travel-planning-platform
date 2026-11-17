@@ -178,6 +178,24 @@ for 30 minutes expires; logout revokes the server-side refresh token and clears 
 **Security note:** a copied access token stays valid until its 15-minute expiry after logout, by design (there is no access-token blacklist).
 Validation errors are field-level: `{ "message": "Validation failed", "errors": [{ "field": "password", "messages": ["..."] }] }`.
 
+### Flight search (`GET /api/flights/search`, `GET /api/flights/:id`)
+
+Both are public (guests can search). Search lists **Scheduled, not-yet-departed flights of active airlines** with enough free seats (`availableSeats` is already total - booked - held).
+
+| Parameter | Rule |
+| --- | --- |
+| `origin`, `destination` | required; 3-letter IATA code that exists in the imported airports (unknown code = 400); must differ |
+| `departureDate` | required `YYYY-MM-DD`, the **local date at the departure airport**; "past" is judged by today's date at that airport |
+| `returnDate` | optional round trip; local date at the **destination** airport, not before `departureDate`. The response then also has `return` options (destination to origin, departing after the earliest outbound arrival) |
+| `adults` (default 1, min 1), `children`, `infants` | each 0-9. Seats needed = adults + children. Infants take no seat and pay 10% of the fare; infants must not exceed adults |
+| `cabinClass` | `Economy`, `Premium Economy`, `Business` or `First` |
+| `minPrice`, `maxPrice` | inclusive, per seat, in the stored platform currency (no conversion); min > max = 400 |
+| `airlineId`, `sortBy` (`price` / `duration` / `departure`, default departure), `order` (`asc` / `desc`), `page`, `limit` (default 10) | |
+
+Every bad value is a 400 with the error on the right field (`{ "errors": [{ "field": "adults", ... }] }`), never an empty 200. No match is a 200 with `"message": "No flights found"`. Times are returned both as airport-local time (`local`, `utcOffset`, `timeZone`) and as the UTC instant. Each cabin has `estimatedTotal = (adults + children) x price + infants x 10% of price`. The search logic is one method, `FlightSearchService.search`, which takes **lists** of airports so a later "any airport in a city" search can reuse it. It is backed by the compound index `Flight { departureAirport, arrivalAirport, departureTime, status }`. `GET /flights/:id` also returns the airline's cancellation and baggage policies (`null` when not set).
+
+The public reference and airport lists (`/airports`, `/countries`, `/cities`, `/attractions`) default to 10 per page; a malformed `page`, `limit`, `countryCode`, `cityId` or `parentId` is 400, while a well-formed unknown value gives an empty list.
+
 ## 8. Testing
 
 Run unit tests:
