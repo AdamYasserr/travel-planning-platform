@@ -317,12 +317,14 @@ export class PaymentsService {
         const confirmedStatus = this.confirmedStatus(bookingType);
         const cancelledStatus = this.cancelledStatus(bookingType);
 
+        // A second cancel is rejected and never starts another refund. A refund that is still
+        // Pending is retried by the retryPendingRefunds job, not by repeating the cancel.
         if (booking.status === cancelledStatus) {
           result = {
             booking,
             payment,
             refundPercentage: payment?.refundPercentage ?? 0,
-            retryRefund: payment?.refundStatus === RefundStatus.PENDING,
+            conflict: 'This booking is already cancelled',
           };
           return;
         }

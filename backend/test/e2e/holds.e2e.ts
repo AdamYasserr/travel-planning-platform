@@ -173,9 +173,7 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       expect((await holdHotel(b, { hotelId, roomIds })).status).toBe(201);
     });
 
-    it('cancelling a Cancelled booking again is an idempotent retry: 200 and no second refund', async () => {
-      // Current behaviour (payments.service cancelBooking): a repeat cancel of a Cancelled booking returns it
-      // unchanged so a client retry is safe. Rejecting it with 409 would be a one-line change there.
+    it('cancelling a Cancelled booking again is rejected (409) and never creates a second refund', async () => {
       const { hotelId, roomIds } = await createHotelWithRooms(ctx, { rooms: 1 });
       const user = await createUser(ctx);
       const hold = await holdHotel(user, { hotelId, roomIds });
@@ -183,9 +181,12 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       expect((await user.agent.post(`/api/hotel-bookings/${hold.body._id}/cancel`)).status).toBe(200);
       const refundsAfterFirst = ctx.stripe.refunds.length;
       const second = await user.agent.post(`/api/hotel-bookings/${hold.body._id}/cancel`);
-      expect(second.status).toBe(200);
-      expect(second.body.booking.status).toBe('Cancelled');
+      expect(second.status).toBe(409);
+      expect(second.body.message).toMatch(/already cancelled/i);
+      const third = await user.agent.delete(`/api/hotel-bookings/${hold.body._id}`);
+      expect(third.status).toBe(409);
       expect(ctx.stripe.refunds.length).toBe(refundsAfterFirst);
+      expect(await ctx.conn.model('Payment').countDocuments({ bookingId: hold.body._id })).toBe(1);
     });
 
     it('cancelling an expired hold twice is rejected', async () => {
@@ -213,8 +214,8 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       expect(res.body.status).toBe('Pending Payment');
       expectTenMinuteHold(res.body.holdExpiresAt);
 
-      // NOTE: GET /flights/:id/cabins currently needs a login (no @Public); see the e2e report.
-      const cabins = await user.agent.get(`/api/flights/${flightId}/cabins`);
+      // public route: no login needed
+      const cabins = await ctx.http().get(`/api/flights/${flightId}/cabins`);
       expect(cabins.body).toEqual([expect.objectContaining({ availableSeats: seats - 2 })]);
     });
 
@@ -252,6 +253,27 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       await ctx.get(PaymentsService).expirePendingBookings();
       expect((await a.agent.get(`/api/flight-bookings/${hold.body._id}`)).body.status).toBe('Expired');
       expect((await holdFlight(b, { flightId })).status).toBe(201);
+    });
+
+    it('cancelling a Cancelled flight booking again is rejected (409) and never creates a second refund', async () => {
+      const { airlineId, flightId, moderator } = await createAirlineWithFlight(ctx, { seats: 2 });
+      const policy = await moderator.agent.put(`/api/airlines/${airlineId}/cancellation-policy`).send({ tiers: [{ daysBeforeDeparture: 7, refundPercentage: 100 }, { daysBeforeDeparture: 0, refundPercentage: 0 }] });
+      expect(policy.status).toBeLessThan(300);
+      const user = await createUser(ctx);
+      const hold = await holdFlight(user, { flightId });
+      await confirmBooking(ctx, user, 'flight', hold.body._id);
+      const first = await user.agent.post(`/api/flight-bookings/${hold.body._id}/cancel`);
+      expect(first.status).toBe(200);
+      expect(first.body.booking.status).toBe('Cancelled');
+      const refundsAfterFirst = ctx.stripe.refunds.length;
+      expect(refundsAfterFirst).toBeGreaterThan(0);
+
+      const second = await user.agent.post(`/api/flight-bookings/${hold.body._id}/cancel`);
+      expect(second.status).toBe(409);
+      expect(second.body.message).toMatch(/already cancelled/i);
+      expect((await user.agent.delete(`/api/flight-bookings/${hold.body._id}`)).status).toBe(409);
+      expect(ctx.stripe.refunds.length).toBe(refundsAfterFirst);
+      expect(await ctx.conn.model('Payment').countDocuments({ bookingId: hold.body._id })).toBe(1);
     });
 
     it('cancelling a flight hold twice is rejected', async () => {

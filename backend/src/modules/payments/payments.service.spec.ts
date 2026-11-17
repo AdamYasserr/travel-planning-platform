@@ -414,16 +414,18 @@ describe('PaymentsService', () => {
     expect(payment.status).toBe(PaymentStatus.PARTIALLY_REFUNDED);
   });
 
-  it('does not issue another refund after cancellation has already been refunded', async () => {
+  it('rejects cancelling an already-cancelled booking (409) and issues no second refund', async () => {
     hotelBooking.status = HotelBookingStatus.CANCELLED;
     payment.status = PaymentStatus.REFUNDED;
     payment.refundStatus = RefundStatus.SUCCEEDED;
 
-    await service.cancelBooking(
-      userId.toString(),
-      PaymentBookingType.HOTEL,
-      bookingId.toString(),
-    );
+    await expect(
+      service.cancelBooking(
+        userId.toString(),
+        PaymentBookingType.HOTEL,
+        bookingId.toString(),
+      ),
+    ).rejects.toThrow(/already cancelled/i);
 
     expect(stripeService.createRefund).not.toHaveBeenCalled();
     expect(hotelBookingModel.findOneAndUpdate).not.toHaveBeenCalled();
