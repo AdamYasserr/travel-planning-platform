@@ -19,11 +19,12 @@ export class UploadMediaDto {
   targetType: MediaTargetType;
 
   @ApiPropertyOptional({
-    description: 'Activity MongoDB ObjectId; required for activity images',
+    description: 'Target MongoDB ObjectId; required for activity and post images',
     example: '507f1f77bcf86cd799439011',
   })
   @ValidateIf((dto: UploadMediaDto) =>
-    dto.targetType === MediaTargetType.ACTIVITY,
+    dto.targetType === MediaTargetType.ACTIVITY ||
+    dto.targetType === MediaTargetType.POST,
   )
   @IsMongoId()
   targetId?: string;

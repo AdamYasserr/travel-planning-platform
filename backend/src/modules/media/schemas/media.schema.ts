@@ -37,6 +37,9 @@ export class Media {
 
   @Prop({ required: true, unique: true, select: false })
   storageKey: string;
+
+  @Prop({ type: Boolean, default: false, required: true, index: true })
+  cleanupPending: boolean;
 }
 
 export const MediaSchema = SchemaFactory.createForClass(Media);

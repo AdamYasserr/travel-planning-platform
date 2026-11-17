@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { User, UserSchema } from '../../users/user.schema';
+import { Post, PostSchema } from '../blog/schemas/post.schema';
 import {
   Itinerary,
   ItinerarySchema,
@@ -16,6 +17,7 @@ import { Media, MediaSchema } from './schemas/media.schema';
     MongooseModule.forFeature([
       { name: Media.name, schema: MediaSchema },
       { name: User.name, schema: UserSchema },
+      { name: Post.name, schema: PostSchema },
       { name: Itinerary.name, schema: ItinerarySchema },
     ]),
   ],

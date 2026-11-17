@@ -23,12 +23,16 @@ import { AirlinesModule } from './modules/airlines/airlines.module';
 import { FlightsModule } from './modules/flights/flights.module';
 import { AirportsModule } from './modules/airports/airports.module';
 import { FlightBookingsModule } from './modules/flight-bookings/flight-bookings.module';
+import { AirportsModule } from './modules/airports/airports.module';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+
+import { AirportsModule } from './modules/airports/airports.module';
+import { BlogModule } from './modules/blog/blog.module';
 
 @Module({
   imports: [
@@ -53,6 +57,7 @@ import { AppService } from './app.service';
     FlightsModule,
     AirportsModule,
     FlightBookingsModule,
+    BlogModule,
 
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([

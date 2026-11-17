@@ -10,6 +10,8 @@ import {
 
   Logger,
 
+  Injectable,
+
   NotFoundException,
 
   UnauthorizedException,

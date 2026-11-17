@@ -8,12 +8,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import sharp from 'sharp';
 
 import { User, UserDocument } from '../../users/user.schema';
+import { Post, PostDocument } from '../blog/schemas/post.schema';
+import { PostStatus } from '../blog/enums/post-status.enum';
 import {
   Itinerary,
   ItineraryDocument,
@@ -95,6 +98,8 @@ export class MediaService {
     private readonly userModel: Model<UserDocument>,
     @InjectModel(Itinerary.name)
     private readonly itineraryModel: Model<Itinerary>,
+    @InjectModel(Post.name)
+    private readonly postModel: Model<PostDocument>,
     private readonly storage: LocalMediaStorage,
   ) {}
 
@@ -127,6 +132,9 @@ export class MediaService {
     }
 
     let itinerary: ItineraryDocument | null = null;
+    let post: PostDocument | null = null;
+    let postObjectId: Types.ObjectId | null = null;
+    let attachedToPost = false;
 
     if (dto.targetType === MediaTargetType.PROFILE) {
       if (dto.targetId) {
@@ -152,6 +160,23 @@ export class MediaService {
         throw new NotFoundException(
           'Activity not found in one of your itineraries',
         );
+      }
+    } else if (dto.targetType === MediaTargetType.POST) {
+      if (!dto.targetId || !Types.ObjectId.isValid(dto.targetId)) {
+        throw new BadRequestException('A valid post targetId is required');
+      }
+
+      postObjectId = new Types.ObjectId(dto.targetId);
+      post = await this.postModel
+        .findOne({ _id: postObjectId, authorId: ownerObjectId })
+        .select('_id imageIds')
+        .exec();
+
+      if (!post) {
+        throw new NotFoundException('Post not found');
+      }
+      if ((post.imageIds ?? []).length >= 5) {
+        throw new BadRequestException('A post can have at most 5 images');
       }
     } else {
       throw new BadRequestException(
@@ -221,28 +246,70 @@ export class MediaService {
         await itinerary.save();
       }
 
+      if (dto.targetType === MediaTargetType.POST && postObjectId) {
+        const attachment = await this.postModel
+          .updateOne(
+            {
+              _id: postObjectId,
+              authorId: ownerObjectId,
+              $expr: {
+                $lt: [{ $size: { $ifNull: ['$imageIds', []] } }, 5],
+              },
+            },
+            { $addToSet: { imageIds: media._id } },
+          )
+          .exec();
+
+        if (attachment.matchedCount !== 1) {
+          throw new ConflictException(
+            'Post image limit reached or post is no longer available',
+          );
+        }
+        attachedToPost = true;
+      }
+
       return {
         message: 'Media uploaded successfully',
         media: this.toPublicMedia(media),
       };
     } catch (error: unknown) {
+      if (attachedToPost && postObjectId) {
+        try {
+          await this.postModel
+            .updateOne(
+              { _id: postObjectId, authorId: ownerObjectId },
+              { $pull: { imageIds: media?._id } },
+            )
+            .exec();
+        } catch {
+          this.logger.warn('Post image reference cleanup failed after upload error');
+        }
+      }
       if (media) {
         try {
-          await this.mediaModel.deleteOne({ _id: media._id }).exec();
+          await this.mediaModel
+            .updateOne({ _id: media._id }, { $set: { cleanupPending: true } })
+            .exec();
         } catch {
-          this.logger.warn('Media metadata cleanup failed after upload error');
+          this.logger.error('Could not mark failed-upload media for cleanup');
         }
       }
 
       try {
-        await this.storage.remove(storageKey);
+        const removal = await this.storage.remove(storageKey);
+        if (removal.status === 'queued') {
+          this.logger.warn('Failed-upload media cleanup was queued for retry');
+        } else if (media) {
+          await this.mediaModel.deleteOne({ _id: media._id }).exec();
+        }
       } catch {
-        this.logger.warn('Media file cleanup failed after upload error');
+        this.logger.error('Media file cleanup could not be queued after upload error');
       }
 
       if (
         error instanceof BadRequestException ||
-        error instanceof NotFoundException
+        error instanceof NotFoundException ||
+        error instanceof ConflictException
       ) {
         throw error;
       }
@@ -317,15 +384,164 @@ export class MediaService {
     );
 
     await itinerary.save();
-    await this.mediaModel.deleteOne({ _id: imageObjectId }).exec();
+    await this.mediaModel
+      .updateOne(
+        { _id: imageObjectId, ownerId: ownerObjectId },
+        { $set: { cleanupPending: true } },
+      )
+      .exec();
+    const pending = await this.cleanupStoredMedia([media]);
 
-    try {
-      await this.storage.remove(media.storageKey);
-    } catch {
-      this.logger.warn('Activity image file cleanup failed after deletion');
+    return {
+      message: pending
+        ? 'Activity image detached; storage cleanup queued for retry'
+        : 'Activity image deleted successfully',
+      storageCleanupPending: pending > 0,
+    };
+  }
+
+  async deletePostImage(ownerId: string, postId: string, imageId: string) {
+    if (
+      !Types.ObjectId.isValid(ownerId) ||
+      !Types.ObjectId.isValid(postId) ||
+      !Types.ObjectId.isValid(imageId)
+    ) {
+      throw new BadRequestException('Invalid user, post, or image ID');
     }
 
-    return { message: 'Activity image deleted successfully' };
+    const ownerObjectId = new Types.ObjectId(ownerId);
+    const postObjectId = new Types.ObjectId(postId);
+    const imageObjectId = new Types.ObjectId(imageId);
+    const session = await this.postModel.db.startSession();
+    let mediaToClean: MediaDocument | undefined;
+
+    try {
+      await session.withTransaction(async () => {
+        const post = await this.postModel
+          .findOne({ _id: postObjectId, authorId: ownerObjectId })
+          .select('_id')
+          .session(session)
+          .exec();
+
+        if (!post) {
+          throw new NotFoundException('Post not found');
+        }
+
+        const media = await this.mediaModel
+          .findOne({
+            _id: imageObjectId,
+            ownerId: ownerObjectId,
+            targetType: MediaTargetType.POST,
+            targetId: postObjectId,
+          })
+          .select('+storageKey')
+          .session(session)
+          .exec();
+
+        if (!media) {
+          throw new NotFoundException('Post image not found');
+        }
+        if (media.cleanupPending) {
+          mediaToClean = media;
+          return;
+        }
+
+        const detached = await this.postModel
+          .updateOne(
+            {
+              _id: postObjectId,
+              authorId: ownerObjectId,
+              imageIds: imageObjectId,
+            },
+            { $pull: { imageIds: imageObjectId } },
+          )
+          .session(session)
+          .exec();
+
+        if (detached.matchedCount !== 1) {
+          throw new NotFoundException('Post image not found');
+        }
+
+        await this.mediaModel
+          .updateOne(
+            { _id: imageObjectId, ownerId: ownerObjectId },
+            { $set: { cleanupPending: true } },
+          )
+          .session(session)
+          .exec();
+        mediaToClean = media;
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    const pending = mediaToClean
+      ? await this.cleanupStoredMedia([mediaToClean])
+      : 0;
+
+    return {
+      message: pending
+        ? 'Post image detached; storage cleanup queued for retry'
+        : 'Post image deleted successfully',
+      storageCleanupPending: pending > 0,
+    };
+  }
+
+  async preparePostMediaDeletion(
+    ownerId: string,
+    postId: string,
+    session: ClientSession,
+  ): Promise<() => Promise<number>> {
+    if (
+      !Types.ObjectId.isValid(ownerId) ||
+      !Types.ObjectId.isValid(postId)
+    ) {
+      throw new BadRequestException('Invalid user or post ID');
+    }
+
+    const filter = {
+      ownerId: new Types.ObjectId(ownerId),
+      targetType: MediaTargetType.POST,
+      targetId: new Types.ObjectId(postId),
+    };
+    const media = await this.mediaModel
+      .find(filter)
+      .select('+storageKey')
+      .session(session)
+      .exec();
+
+    if (media.length === 0) return async () => 0;
+
+    await this.mediaModel
+      .updateMany(filter, { $set: { cleanupPending: true } })
+      .session(session)
+      .exec();
+
+    return () => this.cleanupStoredMedia(media);
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async retryPendingStorageCleanup(): Promise<void> {
+    try {
+      const queueResult = await this.storage.retryPendingRemovals();
+      const pendingMedia = await this.mediaModel
+        .find({ cleanupPending: true })
+        .select('+storageKey')
+        .limit(100)
+        .exec();
+      const pendingRecords = await this.cleanupStoredMedia(pendingMedia);
+
+      if (queueResult.pending > 0 || pendingRecords > 0) {
+        this.logger.warn(
+          `Media cleanup retry left ${queueResult.pending + pendingRecords} item(s) pending`,
+        );
+      }
+    } catch (error: unknown) {
+      this.logger.error(
+        'Media cleanup retry failed',
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   async getContent(ownerId: string, mediaId: string) {
@@ -338,10 +554,15 @@ export class MediaService {
 
     const media = await this.mediaModel
       .findOne({
-        _id: mediaId,
+        _id: new Types.ObjectId(mediaId),
         ownerId: new Types.ObjectId(ownerId),
+        cleanupPending: { $ne: true },
         targetType: {
-          $in: [MediaTargetType.PROFILE, MediaTargetType.ACTIVITY],
+          $in: [
+            MediaTargetType.PROFILE,
+            MediaTargetType.ACTIVITY,
+            MediaTargetType.POST,
+          ],
         },
       })
       .select('+storageKey')
@@ -351,11 +572,100 @@ export class MediaService {
       throw new NotFoundException('Media not found');
     }
 
+    if (media.targetType === MediaTargetType.POST) {
+      if (!media.targetId || media.ownerId.toString() !== ownerId) {
+        throw new NotFoundException('Media not found');
+      }
+      const post = await this.postModel
+        .findById(media.targetId)
+        .select('authorId')
+        .exec();
+
+      if (!post || post.authorId.toString() !== ownerId) {
+        throw new NotFoundException('Media not found');
+      }
+    }
+
     return {
       buffer: await this.storage.read(media.storageKey),
       mimeType: media.mimeType,
       originalName: media.originalName,
     };
+  }
+
+  async getPublicPostContent(mediaId: string) {
+    if (!Types.ObjectId.isValid(mediaId)) {
+      throw new NotFoundException('Media not found');
+    }
+
+    const media = await this.mediaModel
+      .findOne({
+        _id: new Types.ObjectId(mediaId),
+        targetType: MediaTargetType.POST,
+        cleanupPending: { $ne: true },
+      })
+      .select('+storageKey')
+      .exec();
+
+    if (!media?.targetId) {
+      throw new NotFoundException('Media not found');
+    }
+
+    const post = await this.postModel
+      .findOne({
+        _id: media.targetId,
+        status: PostStatus.PUBLISHED,
+        isHidden: false,
+        imageIds: new Types.ObjectId(mediaId),
+      })
+      .select('_id authorId')
+      .exec();
+
+    if (
+      !post?.authorId ||
+      !media.ownerId ||
+      post.authorId.toString() !== media.ownerId.toString()
+    ) {
+      throw new NotFoundException('Media not found');
+    }
+
+    return {
+      buffer: await this.storage.read(media.storageKey),
+      mimeType: media.mimeType,
+      originalName: media.originalName,
+    };
+  }
+
+  private async cleanupStoredMedia(media: MediaDocument[]): Promise<number> {
+    let pending = 0;
+    for (const item of media) {
+      try {
+        if (item.targetType === MediaTargetType.POST && item.targetId) {
+          await this.postModel
+            .updateOne(
+              { _id: item.targetId, authorId: item.ownerId },
+              { $pull: { imageIds: item._id } },
+            )
+            .exec();
+        }
+
+        const result = await this.storage.remove(item.storageKey);
+        if (result.status === 'queued') {
+          pending += 1;
+          continue;
+        }
+        await this.mediaModel
+          .deleteOne({ _id: item._id, cleanupPending: true })
+          .exec();
+      } catch (error: unknown) {
+        pending += 1;
+        this.logger.error(
+          'Media file cleanup could not be queued; cleanup remains pending',
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
+    }
+    return pending;
   }
 
   private findActivity(
@@ -377,7 +687,10 @@ export class MediaService {
       originalName: media.originalName,
       mimeType: media.mimeType,
       size: media.size,
-      url: `/api/media/${media._id.toString()}/content`,
+      url:
+        media.targetType === MediaTargetType.POST
+          ? `/api/media/public/${media._id.toString()}/content`
+          : `/api/media/${media._id.toString()}/content`,
       createdAt: media.createdAt,
     };
   }
