@@ -225,10 +225,10 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       const lines = res.text.trimEnd().split('\r\n');
       expect(lines[0]).toBe('booking_reference,full_name,type,cabin,passport_or_id,nationality,status');
       expect(lines).toHaveLength(1 + 3 + 2);
-      expect(lines).toContain(`${f.familyHold.body.reference},Child Traveller,child,Economy,,,Confirmed`);
-      expect(lines).toContain(`${f.familyHold.body.reference},Infant Traveller,infant,Economy,,,Confirmed`);
-      expect(lines).toContain(`${f.done.body.reference},"'=HYPERLINK(""http://evil"",""x"")",adult,Economy,,,Completed`);
-      expect(lines).toContain(`${f.done.body.reference},"Doe, ""Jo""",adult,Economy,,,Completed`);
+      expect(lines).toContain(`${f.familyHold.body.reference},Child Traveller,child,Economy,29001011234,EG,Confirmed`);
+      expect(lines).toContain(`${f.familyHold.body.reference},Infant Traveller,infant,Economy,29001011234,EG,Confirmed`);
+      expect(lines).toContain(`${f.done.body.reference},"'=HYPERLINK(""http://evil"",""x"")",adult,Economy,29001011234,EG,Completed`);
+      expect(lines).toContain(`${f.done.body.reference},"Doe, ""Jo""",adult,Economy,29001011234,EG,Completed`);
       expect(res.text).not.toContain(f.pending.body.reference);
     });
 

@@ -1,3 +1,5 @@
+import { Types } from 'mongoose';
+
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { startApp, type E2EContext } from './helpers/app';
 import { ETicketService } from '../../src/modules/flight-bookings/e-ticket/e-ticket.service';
@@ -464,6 +466,56 @@ describe('round-trip booking, passengers, extra baggage and rescheduling (FLT-12
       const after = await bookingOf(bookingId);
       expect(after.departureTime).toEqual(outboundLater);
       expect(after.returnSegment.departureTime).toEqual(later);
+    });
+  });
+
+  describe('airline view and passenger CSV (FLT-29 with FLT-12 / FLT-19)', () => {
+    it('a round trip is listed on BOTH flights with that flight\'s cabin, documents, nationality and bags', async () => {
+      const t = await roundTrip();
+      await putBaggage(t);
+      const { hold } = await confirmedRoundTrip(t, {
+        return: { flightId: t.returnId, cabinClass: 'Business' },
+        passengers: [
+          pax({ extraBags: { outbound: 1, return: 2 } }),
+          pax({ fullName: 'Baby', dateOfBirth: bornBefore(30, 1), passportNumber: undefined, passportExpiry: undefined, nationalId: '-1234', nationality: 'ae' }),
+        ],
+      });
+      const view = async (flightId: string) =>
+        ((await t.moderator.agent.get(`/api/flights/${flightId}/bookings`)).body.items as any[]).find((i) => i.bookingId === hold.body._id);
+      const out = await view(t.outboundId);
+      const back = await view(t.returnId);
+      expect(out).toMatchObject({ tripType: 'round-trip', direction: 'outbound', cabinClass: 'Economy', passengerCounts: { adults: 1, children: 0, infants: 1 } });
+      expect(back).toMatchObject({ tripType: 'round-trip', direction: 'return', cabinClass: 'Business', passengerCounts: { adults: 1, children: 0, infants: 1 } });
+      expect(out.passengerDetails).toEqual([
+        { fullName: 'Sara Ali', type: 'adult', passportOrId: 'A1234567', nationality: 'EG', extraBags: 1 },
+        { fullName: 'Baby', type: 'infant', passportOrId: '-1234', nationality: 'AE', extraBags: 0 },
+      ]);
+      expect(back.passengerDetails[0].extraBags).toBe(2);
+
+      const csv = async (flightId: string) => (await t.moderator.agent.get(`/api/flights/${flightId}/passengers/export`)).text.trimEnd().split('\r\n');
+      const ref = hold.body.reference;
+      expect(await csv(t.outboundId)).toEqual([
+        'booking_reference,full_name,type,cabin,passport_or_id,nationality,status',
+        `${ref},Sara Ali,adult,Economy,A1234567,EG,Confirmed`,
+        // A value starting with "-" could run as a spreadsheet formula, so it is prefixed with '.
+        `${ref},Baby,infant,Economy,'-1234,AE,Confirmed`,
+      ]);
+      expect((await csv(t.returnId)).slice(1)).toEqual([`${ref},Sara Ali,adult,Business,A1234567,EG,Confirmed`, `${ref},Baby,infant,Business,'-1234,AE,Confirmed`]);
+    });
+
+    it('older bookings without documents still list, with empty CSV columns', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 4 });
+      const user = await createUser(ctx);
+      const hold = await holdFlight(user, { flightId: f.flightId });
+      await confirmBooking(ctx, user, 'flight', hold.body._id);
+      await model('FlightBooking').collection.updateOne(
+        { _id: new Types.ObjectId(String(hold.body._id)) },
+        { $unset: { 'passengers.0.passportNumber': '', 'passengers.0.passportExpiry': '', 'passengers.0.nationality': '', 'passengers.0.type': '', tripType: '', seatCount: '' } },
+      );
+      const lines = (await f.moderator.agent.get(`/api/flights/${f.flightId}/passengers/export`)).text.trimEnd().split('\r\n');
+      expect(lines[1]).toBe(`${hold.body.reference},Passenger 1,adult,Economy,,,Confirmed`);
+      const item = (await f.moderator.agent.get(`/api/flights/${f.flightId}/bookings`)).body.items[0];
+      expect(item).toMatchObject({ tripType: 'one-way', direction: 'outbound', passengerDetails: [{ type: 'adult', passportOrId: null, nationality: null }] });
     });
   });
 
