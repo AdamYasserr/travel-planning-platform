@@ -30,6 +30,7 @@ import {
 import { Itinerary } from "./schemas/itinerary.schema";
 import { BudgetEntryType } from "./schemas/budget.schema";
 import { ItineraryVisibility } from "./enums/itinerary-visibility.enum";
+import { cityGroups, dayDate } from "./itinerary-days";
 
 @Injectable()
 export class ItinerariesService {
@@ -581,6 +582,8 @@ export class ItinerariesService {
     const days = await Promise.all(
       (result.days ?? []).map(async (day: any) => ({
         ...day,
+        // ITN-05: derived, never stored (startDate + dayNumber - 1).
+        date: dayDate(itinerary.startDate, day.dayNumber),
         budgets: await Promise.all(
           (day.budgets ?? []).map(async (entry: any) => ({
             ...entry,
@@ -596,6 +599,8 @@ export class ItinerariesService {
     return {
       ...result,
       days,
+      // ITN-09: runs of consecutive days in the same city, computed on read.
+      cityGroups: cityGroups(result.days ?? [], itinerary.startDate),
       linkedBookings: {
         hotels: hotelBookings.map((booking: any) => ({
           id: String(booking._id),
