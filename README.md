@@ -117,6 +117,26 @@ npm run seed:reference -- ./other-dir  # or a custom folder (also: REFERENCE_DAT
   unknown IDs are rejected with `400`. Supported currencies are the distinct `currency` values
   of `Countries.csv` (`GET /api/currencies`). Run the import before creating hotels, flights or itineraries.
 
+### Demo data (`npm run seed`)
+
+Creates demo users, an airline with flights, a hotel with rooms, four bookings of one customer (pending,
+paid, completed, cancelled and refunded) and two itineraries, so the manual tests and the demo have data.
+Import the reference data first, then:
+
+```bash
+cd backend
+npm run seed -- --yes            # create (a second run creates nothing new)
+npm run seed -- --reset --yes    # remove what the seed created, then create it again with fresh dates
+```
+
+- Safe for the shared database: every created document is listed in a `seed_manifest` collection and `--reset`
+  deletes only those (and what depends on them). Real users, hotels and bookings are never changed. The run
+  prints the database name, needs `--yes` (or `SEED_CONFIRM=yes`) and refuses `NODE_ENV=production` without `--force`.
+- Stripe is never called. Prices use the platform currency. Users share one password (`SEED_PASSWORD`, default `DemoPass123`).
+- At the end it prints the user e-mails, the password and the ids to paste into Swagger.
+- The earlier account seeder is now `npm run seed:accounts`.
+- Details: [backend/docs/seed.md](backend/docs/seed.md).
+
 ### Booking holds, concurrency and lifecycle (HTL-18, FLT-22, GEN-11)
 
 - Proceeding to payment holds every selected room (or flight seats) as one **Pending Payment**

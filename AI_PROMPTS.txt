@@ -124,3 +124,19 @@ How the output was used:
 
 Summary: itinerary days, budget breakdown, activity images, public itineraries, clone and context search (ITN-05 to ITN-26), done with Claude Code.
 ================================================
+
+================================================
+Date: 2026-11-18
+Student: Adam
+Tool: Claude Code (Claude Sonnet 5.5)
+Related Requirements: demo data for manual tests and the demo (no requirement ID)
+
+Prompts used:
+1. "You are continuing the GIU Software Project 1 backend (NestJS + MongoDB Atlas, SHARED team DB). Work on test-branch. Task: a demo seed script so the team can run the manual tests and demo the app. Read first the schemas, the importer script, package.json, roles/users/auth, flight, hotel, booking, payment and review code. Do not wait for my approval. GOALS: `npm run seed` creates demo data and `npm run seed -- --reset` removes ONLY documents it created and re-creates them. SAFETY: idempotent (upsert by a stable key), every seeded document carries a marker (additive only) and --reset deletes by that marker only, refuse NODE_ENV=production unless --force, print the database name and require --yes or SEED_CONFIRM=yes, never touch real users or the platform currency or other settings. All seeded money in the platform currency. DATA: admin, customers Sara and Omar, an airline moderator and a hotel moderator with a documented password; an airline with baggage policy, cancellation tiers and Economy and Business cabins; an outbound, a return and one more one-way flight; a hotel with 2 room types, tiers and photos as metadata; bookings of Sara (Pending Payment hotel with a fresh hold, Confirmed flight with a paid payment record and no real Stripe call, Completed past hotel stay without a review, Cancelled booking with a Refunded refund), created through the app's services where feasible; a public itinerary of Sara (3 days, 2 cities, activities, budget entries, a transport cost) and a private itinerary of Omar. OUTPUT: a table of users, password note and ids; backend/docs/seed.md and a README section. TESTS: one integration test on the in-memory replica set (run twice and compare counts, completed booking reviewable, --reset removes only seeded documents). Commits: feat(seed), test(seed), docs. FINAL REPORT (short)."
+
+How the output was used:
+1. Added the seed command (src/database/seeders/demo): data is created through the real services with Stripe replaced by a local stand-in, every document is recorded in a seed_manifest collection, --reset deletes only those (and stops if a real user's booking depends on the seeded hotel or flights), and the run needs --yes and refuses production without --force. The old account seeder became npm run seed:accounts.
+2. Reviewed the changes; verified with tsc, unit tests, an integration test on an in-memory replica set, a run of the real command against an in-memory database (guards, two runs, reset), and mutation checks (reset deleting every hotel, reset ignoring real users' bookings, seed ignoring its manifest) that break key rules and confirm the tests fail.
+
+Summary: demo data seed (npm run seed) with safe reset for the shared database, done with Claude Code.
+================================================
