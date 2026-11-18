@@ -126,9 +126,36 @@ npm run seed:reference -- ./other-dir  # or a custom folder (also: REFERENCE_DAT
   overlapping requests cannot both succeed. Persistent contention returns `409`, never `500`.
 - Allowed status transitions only: Pending Payment -> Confirmed -> Completed, Pending Payment -> Expired,
   Confirmed -> Cancelled. Cancelling an unpaid hold releases it as Expired.
-- A per-minute job completes Confirmed bookings (hotel: after the check-out day; flight: after departure).
+- A per-minute job completes Confirmed bookings (hotel: after the check-out day; flight: after the departure of its last flight, which is the return of a round trip).
 - `npm test` is fast and offline. `npm run test:integration` runs the concurrency tests against an
   in-memory MongoDB replica set (first run downloads a mongod binary; never touches Atlas).
+
+### Flight bookings: passengers, round trips and extra baggage (FLT-12, FLT-19, FLT-08)
+
+`POST /api/flight-bookings` (and its alias `/hold`) creates ONE Pending Payment booking with one reference and, later, one payment.
+
+```json
+// One-way: the shape used so far (or { "outbound": { ... } } without "return")
+{ "flightId": "<id>", "cabinClass": "Economy", "policiesAccepted": true,
+  "passengers": [{ "fullName": "Sara Ali", "dateOfBirth": "1990-04-02",
+                   "passportNumber": "A1234567", "passportExpiry": "2031-01-01", "nationality": "EG",
+                   "extraBags": { "outbound": 1 } }] }
+
+// Round trip: each segment picks its cabin by cabinClass OR cabinId (from search / flight details)
+{ "outbound": { "flightId": "<id>", "cabinClass": "Economy" },
+  "return":   { "flightId": "<id>", "cabinId": "<cabin id>" },
+  "passengers": [{ "fullName": "Sara Ali", "dateOfBirth": "1990-04-02", "nationalId": "29004020101234",
+                   "nationality": "EG", "extraBags": { "outbound": 1, "return": 2 } }] }
+```
+
+- **Passengers.** Each passenger needs `fullName`, `dateOfBirth`, `nationality` (a code from `GET /api/countries`) and **either** `passportNumber` (6-9 letters or digits, with `passportExpiry` after the arrival of the last flight) **or** `nationalId` (not both). The type is **derived** from the date of birth on the outbound departure day (adult 12+, child 2-11, infant under 2) and is never sent. At least one adult, no more infants than adults, at most 9 adults and children. The new passenger fields are optional in the database, so bookings made before them still load.
+- **Round trip.** Both flights must be Scheduled, in the future and from active airlines (409). The return must fly the reverse route (400) and depart **after** the outbound arrival in UTC (409). A cabin id must belong to its flight (400). Errors name the field (`return.flightId`, `passengers.0.passportExpiry`, ...). The cabin class may differ per segment; each segment is priced at its own cabin fare.
+- **Seats.** One transaction holds the seats on every flight of the booking, or on none: a shortage on either flight is 409 and nothing is held. Adults and children take a seat; infants do not.
+- **Price** (computed on the server only, in minor units of the platform currency). Per flight: seats x fare + infants x 10% of the fare (rounded per infant) + extra bags x fee per bag; the total is the sum over the flights. Example (EGP): outbound 1,500.00 and return 1,350.50, two adults, one child and one infant, one extra bag out and two back at 250.00: outbound 3 x 1,500.00 + 150.00 + 250.00 = 4,900.00; return 3 x 1,350.50 + 135.05 + 500.00 = 4,686.55; total **9,586.55**. The booking stores the breakdown in `pricing`.
+- **Extra baggage.** Per passenger and direction (`extraBags.outbound`, `extraBags.return` on a round trip only). The maximum per passenger and the fee come from the airline's baggage policy (over the maximum is 400); the cabin's free bags stay free. The baggage policy's price must be in the platform currency: `PUT /api/airlines/:id/baggage-policy` treats an omitted `currency` as the platform currency and rejects any other one (`currency must be <PLATFORM_CURRENCY>`). If a stored policy is in another currency, or the airline has none, a request for extra bags is refused with 409 (bookings without extra bags are unaffected).
+- **Lifecycle.** The whole booking is cancelled as one. The refund tier and the "no cancel after departure" check use the **outbound** departure (the outbound airline's tiers are snapshotted). The booking stays upcoming, and Confirmed, until the **return** departs, then completes. If the airline cancels either flight (FLT-06), the whole booking is cancelled and refunded 100%. Every seat release (expiry, cancellation) frees the seats on both flights.
+- **Rescheduling.** When a flight's departure or arrival changes, the time copies on every Pending Payment or Confirmed booking that includes it (one-way, outbound or return) are updated in the same transaction as the flight, then the schedule-change notification is sent. An edit that would make a booked round trip's return depart before its outbound arrival, or that changes the airports of a flight in a booked round trip, is 409.
+- **Stored fields** (all optional, no migration): passengers `type`, `passportNumber`, `passportExpiry`, `nationalId`, `nationality`, `extraBags`; booking `seatCount` (missing means one seat per passenger, as before), `pricing`, `tripType` (missing means one-way), `arrivalTime`, `returnSegment`.
 
 ### Route aliases (project PDF, Section 8)
 
@@ -186,7 +213,7 @@ It prints a signing secret that starts with `whsec_`. Put it in `backend/.env` a
 
 **One platform currency (PAY-04).** `PLATFORM_CURRENCY` (default `USD`). Room and cabin creation and update take an optional `currency`: omitted means the platform currency, and any other value is a 400 on the `currency` field (`currency must be USD`). A booking priced in another currency (data created before this rule) cannot be paid (409). Rooms and cabins already stored in another currency, for example older demo data in EGP, must be recreated in the platform currency before they can be paid.
 
-Known gap: the airline **baggage policy** has its own `currency` (price of an extra bag); it is not restricted to the platform currency yet.
+The airline **baggage policy** (price of an extra bag) follows the same rule; see "Flight bookings" above.
 
 ### Refunds (PAY-03)
 
@@ -210,12 +237,12 @@ One `NotificationsService.notify(userId, type, payload)` is used for every event
 
 ### E-ticket (FLT-23)
 
-`GET /api/bookings/:id/e-ticket` returns a PDF attachment (`e-ticket-<reference>.pdf`) for a **Confirmed or Completed flight booking**: booking reference, passengers, flight number, airline, departure and arrival airports with **local times**, cabin, baggage allowance, total paid and currency. Seats are assigned at check-in (not stored). Owner or admin only; another user's booking or a hotel booking id is 404; any other status is 409. Built with `pdfkit`.
+`GET /api/bookings/:id/e-ticket` returns a PDF attachment (`e-ticket-<reference>.pdf`) for a **Confirmed or Completed flight booking**: booking reference, passengers (children and infants marked), flight number, airline, departure and arrival airports with **local times**, cabin, baggage allowance, total paid and currency. A round trip prints the return flight as well (flight, airline, airports, local times, cabin, baggage). Passport numbers are not printed. Seats are assigned at check-in (not stored). Owner or admin only; another user's booking or a hotel booking id is 404; any other status is 409. Built with `pdfkit`.
 
 ### Provider views (FLT-29, HTL-22)
 
-- `GET /api/flights/:id/bookings` (that airline's moderator or an admin; anyone else 403): one row per booking with reference, status, passenger names, cabin, passenger counts by type (adult 12+, child 2-11, infant under 2 on the departure day) and booked-at; newest first, 10 per page, optional `status`. The response also lists the seats left in each cabin.
-- `GET /api/flights/:id/passengers/export` (same access): a `text/csv` attachment with one row per passenger of every Confirmed or Completed booking: `booking_reference, full_name, type, cabin, passport_or_id, nationality, status`. `passport_or_id` and `nationality` stay empty until passengers carry those fields. **CSV injection:** a cell that starts with `=`, `+`, `-`, `@` (or a tab or carriage return) gets a leading `'`, and quotes, commas and line breaks are escaped (RFC 4180).
+- `GET /api/flights/:id/bookings` (that airline's moderator or an admin; anyone else 403): one row per booking with reference, status, `tripType`, `direction` (`outbound` or `return`), the cabin booked on this flight, passenger names, `passengerDetails` (type, passport or ID, nationality, extra bags on this flight), passenger counts by type (adult 12+, child 2-11, infant under 2 on the outbound departure day) and booked-at; newest first, 10 per page, optional `status`. A round trip is listed on both of its flights. The response also lists the seats left in each cabin.
+- `GET /api/flights/:id/passengers/export` (same access): a `text/csv` attachment with one row per passenger of every Confirmed or Completed booking on the flight (round trips included, with this flight's cabin): `booking_reference, full_name, type, cabin, passport_or_id, nationality, status`. `passport_or_id` is the passport number, else the national ID; both columns are empty for bookings made before passengers carried them. **CSV injection:** a cell that starts with `=`, `+`, `-`, `@` (or a tab or carriage return) gets a leading `'`, and quotes, commas and line breaks are escaped (RFC 4180).
 - `GET /api/hotels/:id/reservations` (that hotel's moderator or an admin): guest name ("Deleted user" for a deactivated account), rooms, check-in/out, status, total and reference; newest first, 10 per page. Filters: `status`, and `from`/`to` (YYYY-MM-DD), which keep stays that overlap the range (both days included).
 
 ### Hotel reviews (HTL-23, HTL-24)
@@ -231,7 +258,7 @@ One `NotificationsService.notify(userId, type, payload)` is used for every event
 
 | group | contains |
 | --- | --- |
-| `upcoming` | Confirmed, or a still-live Pending Payment hold, whose trip is not finished (a hotel stay in progress counts) |
+| `upcoming` | Confirmed, or a still-live Pending Payment hold, whose trip is not finished (a hotel stay in progress counts; a round trip counts until its return departs) |
 | `past` | Completed, or Confirmed and finished before the completion job ran |
 | `cancelled` | Cancelled, Expired, or a Pending Payment hold whose hold has lapsed |
 
@@ -274,7 +301,7 @@ Both are public (guests can search). Search lists **Scheduled, not-yet-departed 
 | `minPrice`, `maxPrice` | inclusive, per seat, in the stored platform currency (no conversion); min > max = 400 |
 | `airlineId`, `sortBy` (`price` / `duration` / `departure`, default departure), `order` (`asc` / `desc`), `page`, `limit` (default 10) | |
 
-Every bad value is a 400 with the error on the right field (`{ "errors": [{ "field": "adults", ... }] }`), never an empty 200. No match is a 200 with `"message": "No flights found"`. Times are returned both as airport-local time (`local`, `utcOffset`, `timeZone`) and as the UTC instant. Each cabin has `estimatedTotal = (adults + children) x price + infants x 10% of price`. The search logic is one method, `FlightSearchService.search`, which takes **lists** of airports so a later "any airport in a city" search can reuse it. It is backed by the compound index `Flight { departureAirport, arrivalAirport, departureTime, status }`. `GET /flights/:id` also returns the airline's cancellation and baggage policies (`null` when not set).
+Every bad value is a 400 with the error on the right field (`{ "errors": [{ "field": "adults", ... }] }`), never an empty 200. No match is a 200 with `"message": "No flights found"`. Times are returned both as airport-local time (`local`, `utcOffset`, `timeZone`) and as the UTC instant. Each cabin has its `id` (send it as `outbound.cabinId` / `return.cabinId` when booking) and `estimatedTotal = (adults + children) x price + infants x 10% of price`. The search logic is one method, `FlightSearchService.search`, which takes **lists** of airports so a later "any airport in a city" search can reuse it. It is backed by the compound index `Flight { departureAirport, arrivalAirport, departureTime, status }`. `GET /flights/:id` also returns the airline's cancellation and baggage policies (`null` when not set).
 
 The public reference and airport lists (`/airports`, `/countries`, `/cities`, `/attractions`) default to 10 per page; a malformed `page`, `limit`, `countryCode`, `cityId` or `parentId` is 400, while a well-formed unknown value gives an empty list.
 
@@ -332,7 +359,7 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 
 **Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: accept the policies, open a payment (`POST /api/payments`), then post a fake-signed `payment_intent.succeeded` event to `POST /api/payments/webhook`. Stripe event details live in that helper and in `StripeFake`; `payments.e2e.ts` also builds failure, wrong-amount and late events through the fake.
 
-**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`, `provider-views-reviews`); shared helpers in `test/e2e/helpers/`:
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`, `provider-views-reviews`, `round-trip-booking`); shared helpers in `test/e2e/helpers/`:
 
 | Helper | Purpose |
 | --- | --- |

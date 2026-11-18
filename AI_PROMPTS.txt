@@ -91,3 +91,19 @@ How the output was used:
 2. Added the airline view of a flight with the CSV passenger export (CSV-injection safe), the hotel reservations list, and hotel reviews with a transactional rating recount and the public review list. Fixed the rating not being recounted after report moderation.
 3. Reviewed the changes; verified with tsc, unit, integration and end-to-end tests, and with mutation checks that break key rules and confirm the tests fail.
 ================================================
+
+================================================
+Date: 2026-11-18
+Student: Adam
+Tool: Claude Code (Claude Opus 5.5)
+Related Requirements: FLT-12, FLT-19, FLT-08, FLT-29, FLT-06, FLT-23
+
+Prompts used:
+1. "Round-trip booking, passenger details, extra baggage, infant rules in booking, a bug fix, and filling the passenger CSV columns. Plan first, wait for my approval, then implement." (with the requirement summary, the departureTime-copy bug, the CSV columns, rules, test list and mutation checks)
+2. Approval with decisions: at most 9 adults and children, infants not more than adults; the cabin class may differ per segment and each segment uses its own cabin fare; each segment takes cabinClass or cabinId (exactly one) and cabin ids are added to search and flight details; a round trip stays upcoming until the return departs; passport and national ID together is a 400; the active-airline check applies to one-way bookings too, and changing the airports of a flight in a booked round trip is a 409. Run tsc and the full unit suite after every commit, the full integration and e2e suites once at the end.
+
+How the output was used:
+1. Fixed the departure time copy on bookings not following a rescheduled flight (same transaction as the flight edit).
+2. Added passenger documents and derived passenger types, infant pricing (no seat, 10% of the fare), extra baggage per direction with the platform-currency rule on the baggage policy, and round-trip booking (one booking, one reference, one payment, both flights held in one transaction). Updated cancellation, completion, flight cancellation, grouped lists, the e-ticket, the airline view and the passenger CSV for round trips.
+3. Reviewed the changes; verified with tsc, unit, integration (a real replica set: both flights held or neither) and end-to-end tests, and with mutation checks that break key rules and confirm the tests fail.
+================================================
