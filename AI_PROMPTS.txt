@@ -107,3 +107,20 @@ How the output was used:
 2. Added passenger documents and derived passenger types, infant pricing (no seat, 10% of the fare), extra baggage per direction with the platform-currency rule on the baggage policy, and round-trip booking (one booking, one reference, one payment, both flights held in one transaction). Updated cancellation, completion, flight cancellation, grouped lists, the e-ticket, the airline view and the passenger CSV for round trips.
 3. Reviewed the changes; verified with tsc, unit, integration (a real replica set: both flights held or neither) and end-to-end tests, and with mutation checks that break key rules and confirm the tests fail.
 ================================================
+
+================================================
+Date: 2026-11-18
+Student: Adam
+Tool: Claude Code (Claude Sonnet 5.5)
+Related Requirements: ITN-05, ITN-09, ITN-12, ITN-14, ITN-18, ITN-20, ITN-21, ITN-25, ITN-26, GEN-08
+
+Prompts used:
+1. "You are continuing the GIU Software Project 1 backend (NestJS + MongoDB Atlas, shared team DB). Work on the current branch (test-branch). This block finishes the itinerary endpoints. STEP 0 - PLAN ONLY. SCOPE: day dates, city groups, 60-day limit (ITN-05, ITN-09); budget breakdown and summary (ITN-14, ITN-18); activity images POST/DELETE (ITN-12); media limits (GEN-08); public itinerary search (ITN-20, ITN-21); public itinerary detail and clone (ITN-21); itinerary-context hotel and flight search (ITN-25, ITN-26). RULES: additive DB changes only, follow existing patterns, security for private itineraries and image ownership. One new e2e file, three mutation checks, one commit per item group, final report with endpoints, sample bodies and known limitations."
+2. Answers after checking the official PDF: day dates are derived from startDate + day order (not accepted, not stored); routes exactly as PDF Section 8.8 (/itineraries/public/search, /itineraries/public/:id, /itineraries/:id/clone, /itineraries/:id/hotels, /itineraries/:id/flights, /itineraries/:id/budget-summary, /activities/:id/images); budget buckets are the PDF categories plus intercity transport, in the itinerary display currency with ?currency=; non-contiguous city groups are valid; image errors 400 (type, corrupt, over 5 MB) and 409 (max 5); not-owner is 404; clone copies the plan and planned budget only, never images, bookings, payments or actual spending; public view hides all budget amounts.
+
+How the output was used:
+1. Added derived day dates and city groups, the budget breakdown with exchange-rate date, activity images with shared upload limits (media.limits.ts), public search and detail, clone with attribution, and hotel and flight search in an itinerary's context that reuse the existing search services. Fixed the itinerary view returning Mongoose internals for transport costs.
+2. Reviewed the changes; verified with tsc, unit, integration and end-to-end tests, and with mutation checks (private visibility, image ownership, 60-day limit) that break key rules and confirm the tests fail.
+
+Summary: itinerary days, budget breakdown, activity images, public itineraries, clone and context search (ITN-05 to ITN-26), done with Claude Code.
+================================================

@@ -264,9 +264,47 @@ One `NotificationsService.notify(userId, type, payload)` is used for every event
 
 Without `group`, everything is listed as before; any other value is 400. The e-ticket is also served at `GET /api/flight-bookings/:id/e-ticket` (an alias of `GET /api/bookings/:id/e-ticket`, same rules).
 
+### Itineraries: days, budget, images, public view, clone and search (ITN-05 to ITN-26)
+
+**Days and city groups (ITN-05, ITN-09).** A day has **no stored date**: it is derived on read as `startDate + dayNumber - 1` (UTC calendar days), so adding, deleting or reordering days and editing the start date keep dates and numbering consistent. A date in a request is rejected (400). An itinerary has at most **60 days**, with or without an `endDate`. Every itinerary response has `days[].date` and `cityGroups`: runs of consecutive days in the same city, in day order, computed on read (Cairo, Dubai, Cairo gives three groups; it is never an error).
+
+**Budget summary (ITN-14, ITN-18).** `GET /api/itineraries/:id/budget-summary` (and the `budgetSummary` section of `GET /api/itineraries/:id`), in the itinerary's `displayCurrency` or `?currency=`:
+
+```json
+{ "itineraryId": "...", "currency": "USD", "plannedTotal": 80.8, "actualTotal": 16,
+  "breakdown": { "food": { "planned": 2, "actual": 11 }, "accommodation": { "planned": 50, "actual": 0 },
+                 "in_city_transport": { "planned": 22, "actual": 0 }, "activities": { "planned": 6, "actual": 5 },
+                 "intercity_transport": { "planned": 0.8, "actual": 0 } },
+  "grandTotal": { "planned": 80.8, "actual": 16 },
+  "exchangeRates": [{ "from": "EUR", "to": "USD", "rate": 1.1, "fetchedAt": "2026-11-18T08:00:00.000Z", "stale": false }],
+  "ratesAsOf": "2026-11-18T08:00:00.000Z" }
+```
+
+`intercity_transport` is the itinerary's transport costs (they count as planned). `grandTotal` equals `plannedTotal` / `actualTotal`. `ratesAsOf` is the oldest `fetchedAt` of the rates used (`null` when nothing was converted). Booking prices and activity `cost` are not counted. Conversion uses the existing exchange-rate service; no new external calls.
+
+**Activity images (ITN-12).** `POST /api/activities/:id/images` (multipart field `file`) and `DELETE /api/activities/:id/images/:imageId`. Only the itinerary's owner: an unknown activity or someone else's is **404**. Images appear on each activity as `images: [{ id, url }]`; the owner's URL (`/api/media/:id/content`) is owner-only, and the public view uses `/api/media/public/:id/content`, which works only while the itinerary is public. Removing an activity, day or itinerary removes its images.
+
+**Upload limits (GEN-08).** One set in `src/modules/media/media.limits.ts`, used by `POST /api/media`, `POST /api/posts/:id/images` and the activity route:
+
+| Rule | Value | Error |
+| --- | --- | --- |
+| Type | JPG or PNG, checked by extension, MIME type, magic bytes and a real decode | 400 |
+| Size | 1 byte to 5 MB, one file per request (multer's 413 is answered with 400) | 400 |
+| Hotel photos / post images / activity images | at most 5 each (one logo per airline) | 409 |
+
+**Public itineraries (ITN-20, ITN-21).** No sign-in needed.
+- `GET /api/itineraries/public/search`: only public itineraries, newest first, 10 per page (`limit` up to 100). Filters (all optional, validated): `city` (a city_id with a day in it), `country`, `from` / `to` (`YYYY-MM-DD`; the itinerary overlaps the range; one without an end date runs for as many days as it has; `from` after `to` is 400). Items: `id`, `title`, `countryIds`, `startDate`, `endDate`, `dayCount`, `cities`, `author: { name }`, `clonedFrom`, `createdAt`.
+- `GET /api/itineraries/public/:id`: days (derived date, city, notes), activities (`name`, `description`, `time`, `images`), `cityGroups`, `author: { name }` ("Deleted user" for a deactivated account). **Never** budgets, transport costs, linked bookings, activity costs, the owner's id or e-mail. A private, hidden or unknown itinerary is **404** for everyone, the owner included; a malformed id is 400.
+
+**Clone (ITN-21).** `POST /api/itineraries/:id/clone` (signed in), optional body `{ "startDate": "2027-03-01" }`. The source must be public or your own (otherwise 404). Creates a new **private** itinerary of yours with `clonedFrom: { itineraryId, authorName }`. Copied: title, countries, days, notes, activity name / description / time, **planned** budget entries and transport costs. Never copied: images, activity costs, actual spending, booking links, payments. `startDate` moves the whole clone (day dates are derived; an end date keeps its distance).
+
+**Search in the itinerary's context (ITN-25, ITN-26).** Owner only (anyone else 404). They pick a city group with `group` (its number in `cityGroups`, from 1) or `city` (its first group); the default is group 1. The searching is the existing `HotelSearchService` / `FlightSearchService`, so the result equals `GET /hotels/search` / `GET /flights/search` with the same parameters; the response adds `itineraryId` and `context`.
+- `GET /api/itineraries/:id/hotels?guests=2`: the group's city, check-in on its first day, check-out the day after its last day. `checkIn` / `checkOut` may narrow the stay inside that span (400 otherwise). All hotel search filters (`rooms`, `minPrice`, `maxPrice`, `minRating`, `sortBy`, `order`, `page`, `limit`) work.
+- `GET /api/itineraries/:id/flights`: flies INTO the group's city, from `fromCity` (default: the city of the previous group; required for group 1), from every airport of one city to every airport of the other, on `date` (default the group's first day; at most one day earlier). All flight filters (`adults`, `children`, `infants`, `cabinClass`, prices, `airlineId`, sorting, paging) work.
+
 ### Page size (GEN-05)
 
-Every list defaults to **10 per page**; `limit` is accepted up to 100 and `page`/`limit` must be positive whole numbers (400 otherwise). This covers: admin accounts, bookings, audit logs and reports; posts, my posts, tag posts, the author page and post comments; notifications; flight and hotel bookings; the airline and hotel views above; hotel reviews; reference lists and airports; flight and hotel search.
+Every list defaults to **10 per page**; `limit` is accepted up to 100 and `page`/`limit` must be positive whole numbers (400 otherwise). This covers: admin accounts, bookings, audit logs and reports; posts, my posts, tag posts, the author page and post comments; notifications; flight and hotel bookings; the airline and hotel views above; hotel reviews; reference lists and airports; flight and hotel search; public itinerary search.
 
 ### Authentication cookies and `COOKIE_SECURE`
 
@@ -359,7 +397,7 @@ These tests boot the **real** Nest app (`AppModule`, the real guards, the real `
 
 **Confirmed bookings** are created through the real payment path by `confirmBooking()` in `test/e2e/helpers/bookings.ts`: accept the policies, open a payment (`POST /api/payments`), then post a fake-signed `payment_intent.succeeded` event to `POST /api/payments/webhook`. Stripe event details live in that helper and in `StripeFake`; `payments.e2e.ts` also builds failure, wrong-amount and late events through the fake.
 
-**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`, `provider-views-reviews`, `round-trip-booking`); shared helpers in `test/e2e/helpers/`:
+**Layout.** One file per area in `test/e2e/` (`holds`, `auth`, `auth-secure-cookie`, `aliases`, `reference`, `users`, `admin`, `flight-search`, `hotel-search`, `payments`, `payments-production`, `refunds-cancellation`, `provider-views-reviews`, `round-trip-booking`, `itineraries-public-budget`); shared helpers in `test/e2e/helpers/`:
 
 | Helper | Purpose |
 | --- | --- |
