@@ -24,6 +24,23 @@ import {
 
 import { CabinClass } from '../../flights/schemas/cabin-inventory.schema';
 
+/** FLT-08: extra checked bags per direction, on top of the cabin's free bags. */
+export class ExtraBagsDto {
+  @ApiPropertyOptional({ minimum: 0, default: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  outbound?: number;
+
+  @ApiPropertyOptional({ minimum: 0, default: 0, description: 'Round trips only.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  return?: number;
+}
+
 export class FlightBookingPassengerDto {
   @IsString()
   @IsNotEmpty()
@@ -55,6 +72,15 @@ export class FlightBookingPassengerDto {
   @IsString()
   @Matches(/^[A-Za-z]{2,3}$/, { message: 'nationality must be a country code from the Countries list' })
   nationality: string;
+
+  @ApiPropertyOptional({
+    type: ExtraBagsDto,
+    description: "FLT-08: extra bags per direction. The maximum and the fee come from the airline's baggage policy.",
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ExtraBagsDto)
+  extraBags?: ExtraBagsDto;
 }
 
 export class CreateFlightBookingDto {

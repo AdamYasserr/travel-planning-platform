@@ -6,7 +6,9 @@ import {
   IsInt,
   Min,
   Length,
+  IsOptional,
 } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateBaggagePolicyDto {
   @IsNumber()
@@ -27,8 +29,10 @@ export class UpdateBaggagePolicyDto {
   @Min(0)
   maxExtraBagsPerPassenger: number;
 
+  @ApiPropertyOptional({ description: 'Omit to use the platform currency (PLATFORM_CURRENCY). Any other value is rejected with 400 "currency must be <platform currency>".', example: 'EGP' })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   @Length(3, 3)
-  currency: string;
+  currency?: string;
 }

@@ -52,6 +52,7 @@ describe('FlightBookingsService', () => {
       { expireFlightHoldsForInventory: async () => undefined } as never,
       { findById: () => ({ select: () => lean({ isActive: true }) }) } as never,
       { unknownCountryCodes: async () => [] } as never,
+      { code: 'EUR' } as never,
       connection as never,
     );
   }

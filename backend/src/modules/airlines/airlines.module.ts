@@ -2,6 +2,8 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
+import { ReferenceDataModule } from '../reference-data/reference-data.module';
+
 import {
   Airline,
   AirlineSchema,
@@ -24,6 +26,7 @@ import { AirlinesController } from './airlines.controller';
 
 @Module({
   imports: [
+    ReferenceDataModule,
     MongooseModule.forFeature([
       {
         name: Airline.name,

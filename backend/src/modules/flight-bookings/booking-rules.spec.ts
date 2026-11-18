@@ -1,6 +1,7 @@
 import {
   classifyPassengers,
   countPassengers,
+  extraBagRules,
   infantFareMinor,
   passengerRuleErrors,
   priceSegment,
@@ -73,9 +74,39 @@ describe('flight booking rules (FLT-19, FLT-12)', () => {
 
     it('a segment costs seats x fare + infants x infant fare', () => {
       expect(priceSegment({ fareMinor: 150000, seats: 3, infants: 1 })).toEqual({
-        fareMinor: 150000, seats: 3, infants: 1, seatFaresMinor: 450000, infantFaresMinor: 15000, subtotalMinor: 465000,
+        fareMinor: 150000, seats: 3, infants: 1, seatFaresMinor: 450000, infantFaresMinor: 15000,
+        extraBags: 0, bagFeeMinor: 0, extraBagsFeeMinor: 0, subtotalMinor: 465000,
       });
       expect(priceSegment({ fareMinor: 135050, seats: 3, infants: 1 }).subtotalMinor).toBe(418655);
     });
+  });
+});
+
+describe('extra bags (FLT-08)', () => {
+  const policy = { maxExtraBagsPerPassenger: 2, currency: 'EGP' };
+
+  it('counts the bags of one direction and allows up to the maximum per passenger', () => {
+    const result = extraBagRules([{ extraBags: { outbound: 2, return: 1 } }, {}, { extraBags: { outbound: 1 } }], 'outbound', policy, 'EGP');
+    expect(result).toEqual({ total: 3, errors: [], conflict: null });
+    expect(extraBagRules([{ extraBags: { outbound: 2, return: 1 } }], 'return', policy, 'EGP').total).toBe(1);
+  });
+
+  it('rejects more than the maximum on the passenger and direction (400)', () => {
+    expect(extraBagRules([{}, { extraBags: { return: 3 } }], 'return', policy, 'EGP').errors.map((e) => e.field)).toEqual(['passengers.1.extraBags.return']);
+  });
+
+  it('refuses bags it cannot charge: no policy, or a policy in another currency (409); no bags is never a problem', () => {
+    expect(extraBagRules([{ extraBags: { outbound: 1 } }], 'outbound', null, 'EGP').conflict?.field).toBe('passengers.0.extraBags.outbound');
+    const usd = extraBagRules([{ extraBags: { outbound: 1 } }], 'outbound', { ...policy, currency: 'USD' }, 'EGP');
+    expect(usd.conflict?.message).toMatch(/USD.*EGP/);
+    expect(extraBagRules([{ extraBags: { outbound: 0 } }], 'outbound', { ...policy, currency: 'USD' }, 'EGP').conflict).toBeNull();
+    expect(extraBagRules([{}], 'outbound', null, 'EGP').conflict).toBeNull();
+  });
+
+  it('adds extra bags x fee to the segment price', () => {
+    // Worked example (EGP): outbound fare 1500.00, 3 seats, 1 infant, 1 extra bag at 250.00 = 4900.00.
+    expect(priceSegment({ fareMinor: 150000, seats: 3, infants: 1, extraBags: 1, bagFeeMinor: 25000 }).subtotalMinor).toBe(490000);
+    // Return fare 1350.50, 3 seats, 1 infant, 3 extra bags at 300.00 = 5086.55. Total 9986.55.
+    expect(priceSegment({ fareMinor: 135050, seats: 3, infants: 1, extraBags: 3, bagFeeMinor: 30000 }).subtotalMinor).toBe(508655);
   });
 });

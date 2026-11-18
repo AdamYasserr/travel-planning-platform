@@ -25,17 +25,18 @@ import { PaymentsService } from '../payments/payments.service';
 import { PaymentBookingType } from '../payments/enums/payment-status.enum';
 import { BOOKING_HOLD_DURATION_MS } from '../../common/booking/booking-hold';
 import { ReferenceValidationService } from '../reference-data/reference-validation.service';
+import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
 import {
   classifyPassengers,
   countPassengers,
+  extraBagRules,
   infantFareMinor,
   passengerRuleErrors,
   priceSegment,
   seatsFor,
+  type Direction,
   type SegmentPrice,
 } from './booking-rules';
-
-type Direction = 'outbound' | 'return';
 
 /** One flight of the request, before anything is checked. `field` is where its errors are reported. */
 interface SegmentRequest {
@@ -74,6 +75,7 @@ export class FlightBookingsService {
     @InjectModel(Airline.name)
     private readonly airlineModel: Model<Airline>,
     private readonly references: ReferenceValidationService,
+    private readonly platformCurrency: PlatformCurrencyService,
     @InjectConnection()
     private readonly connection: Connection,
   ) {}
@@ -105,7 +107,21 @@ export class FlightBookingsService {
         errors.push({ field: `passengers.${i}.nationality`, messages: [`Unknown country code ${p.nationality}. Use a code from GET /countries`] });
       }
     });
+    // FLT-08: extra bags per flight; a one-way booking has no return bags.
+    if (segments.length === 1) {
+      dto.passengers.forEach((p, i) => {
+        if (p.extraBags?.return !== undefined) {
+          errors.push({ field: `passengers.${i}.extraBags.return`, messages: ['Return bags are only allowed on a round trip'] });
+        }
+      });
+    }
+    const bags = segments.map((segment) =>
+      extraBagRules(dto.passengers, segment.direction, segment.baggagePolicy, this.platformCurrency.code),
+    );
+    for (const rule of bags) errors.push(...rule.errors);
     if (errors.length) throw fieldErrors(errors);
+    const conflict = bags.find((rule) => rule.conflict)?.conflict;
+    if (conflict) throw fieldConflict(conflict.field, conflict.message);
 
     const types = classifyPassengers(dto.passengers, outbound.flight.departureTime);
     const counts = countPassengers(types);
@@ -122,10 +138,12 @@ export class FlightBookingsService {
 
     return runBookingTransaction(this.connection, async (session) => {
       const held: { segment: LoadedSegment; cabin: CabinInventory & { _id: Types.ObjectId }; price: SegmentPrice }[] = [];
-      for (const segment of segments) {
+      for (const [index, segment] of segments.entries()) {
         const cabin = await this.holdSeats(segment, seats, session);
         const fareMinor = toMinor(cabin.price, cabin.currency);
-        held.push({ segment, cabin, price: priceSegment({ fareMinor, seats, infants: counts.infants }) });
+        const extraBags = bags[index].total;
+        const bagFeeMinor = extraBags > 0 ? toMinor(segment.baggagePolicy!.pricePerExtraBag, cabin.currency) : 0;
+        held.push({ segment, cabin, price: priceSegment({ fareMinor, seats, infants: counts.infants, extraBags, bagFeeMinor }) });
       }
       const currency = held[0].cabin.currency;
       const totalMinor = held.reduce((sum, h) => sum + h.price.subtotalMinor, 0);
@@ -150,6 +168,10 @@ export class FlightBookingsService {
             : {}),
           ...(passenger.nationalId !== undefined ? { nationalId: passenger.nationalId.trim() } : {}),
           nationality: passenger.nationality.trim().toUpperCase(),
+          extraBags: {
+            outbound: passenger.extraBags?.outbound ?? 0,
+            return: passenger.extraBags?.return ?? 0,
+          },
         })),
         seatCount: seats,
         pricePerSeat: outboundCabin.price,
@@ -162,6 +184,9 @@ export class FlightBookingsService {
             infantFare: fromMinor(infantFareMinor(h.price.fareMinor), currency),
             seats: h.price.seats,
             infants: h.price.infants,
+            extraBags: h.price.extraBags,
+            pricePerExtraBag: fromMinor(h.price.bagFeeMinor, currency),
+            extraBagsFee: fromMinor(h.price.extraBagsFeeMinor, currency),
             subtotal: fromMinor(h.price.subtotalMinor, currency),
           })),
           total: fromMinor(totalMinor, currency),

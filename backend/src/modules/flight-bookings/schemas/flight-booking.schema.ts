@@ -15,6 +15,17 @@ import {
 export type FlightBookingDocument = HydratedDocument<FlightBooking>;
 
 @Schema({ _id: false })
+export class PassengerExtraBags {
+  @Prop({ type: Number, min: 0, default: 0 })
+  outbound: number;
+
+  @Prop({ type: Number, min: 0, default: 0 })
+  return: number;
+}
+
+export const PassengerExtraBagsSchema = SchemaFactory.createForClass(PassengerExtraBags);
+
+@Schema({ _id: false })
 export class FlightBookingPassenger {
   @Prop({ type: String, required: true, trim: true })
   fullName: string;
@@ -41,6 +52,10 @@ export class FlightBookingPassenger {
   /** Country code from the Countries reference list. */
   @Prop({ type: String, trim: true, uppercase: true, default: undefined })
   nationality?: string;
+
+  /** FLT-08: extra bags bought per direction (on top of the cabin's free bags). */
+  @Prop({ type: PassengerExtraBagsSchema, default: undefined })
+  extraBags?: PassengerExtraBags;
 }
 
 export const FlightBookingPassengerSchema =
@@ -67,6 +82,16 @@ export class PricingSegment {
 
   @Prop({ type: Number, required: true, min: 0 })
   infants: number;
+
+  /** FLT-08: extra bags on this flight (all passengers) and their price. */
+  @Prop({ type: Number, min: 0, default: 0 })
+  extraBags: number;
+
+  @Prop({ type: Number, min: 0, default: 0 })
+  pricePerExtraBag: number;
+
+  @Prop({ type: Number, min: 0, default: 0 })
+  extraBagsFee: number;
 
   @Prop({ type: Number, required: true, min: 0 })
   subtotal: number;

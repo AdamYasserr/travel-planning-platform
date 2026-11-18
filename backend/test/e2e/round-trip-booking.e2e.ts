@@ -128,6 +128,68 @@ describe('round-trip booking, passengers, extra baggage and rescheduling (FLT-12
     });
   });
 
+  const putBaggage = (f: { moderator: any; airlineId: string }, body: Record<string, unknown> = {}) =>
+    f.moderator.agent.put(`/api/airlines/${f.airlineId}/baggage-policy`).send({
+      carryOnAllowanceKg: 7, checkedBaggageAllowanceKg: 23, pricePerExtraBag: 250, maxExtraBagsPerPassenger: 2, ...body,
+    });
+
+  describe('extra baggage and the baggage currency (FLT-08)', () => {
+    it('the baggage policy price must be in the platform currency: omitted means EGP, another currency is 400', async () => {
+      const f = await createAirlineWithFlight(ctx);
+      const usd = await putBaggage(f, { currency: 'USD' });
+      expect(usd.status).toBe(400);
+      expect(usd.body.errors).toEqual([{ field: 'currency', messages: ['currency must be EGP'] }]);
+      const omitted = await putBaggage(f);
+      expect(omitted.status).toBe(200);
+      expect(omitted.body.currency).toBe('EGP');
+      expect((await putBaggage(f, { currency: 'egp' })).status).toBe(200);
+    });
+
+    it('extra bags are charged per bag on top of the fare; free cabin bags stay free', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 6, price: 5000 });
+      await putBaggage(f);
+      const user = await createUser(ctx);
+      const res = await holdFlight(user, { flightId: f.flightId, body: { passengers: [pax({ extraBags: { outbound: 2 } }), pax({ fullName: 'B' })] } });
+      expect(res.status).toBe(201);
+      // 2 seats x 5000 + 2 extra bags x 250 = 10500
+      expect(res.body.totalPrice).toBe(10500);
+      expect(res.body.pricing.segments[0]).toMatchObject({ extraBags: 2, pricePerExtraBag: 250, extraBagsFee: 500, subtotal: 10500 });
+      expect(res.body.passengers[0].extraBags).toEqual({ outbound: 2, return: 0 });
+      expect(res.body.baggagePolicy).toMatchObject({ freeBagsCount: 1, pricePerExtraBag: 250 });
+    });
+
+    it('more than the maximum per passenger is 400 on that passenger; return bags on a one-way booking are 400', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 6 });
+      await putBaggage(f);
+      const user = await createUser(ctx);
+      const over = await holdFlight(user, { flightId: f.flightId, body: { passengers: [pax(), pax({ extraBags: { outbound: 3 } })] } });
+      expect(over.status).toBe(400);
+      expect(errorFields(over.body)).toEqual(['passengers.1.extraBags.outbound']);
+      const back = await holdFlight(user, { flightId: f.flightId, body: { passengers: [pax({ extraBags: { return: 1 } })] } });
+      expect(back.status).toBe(400);
+      expect(errorFields(back.body)).toEqual(['passengers.0.extraBags.return']);
+      const negative = await holdFlight(user, { flightId: f.flightId, body: { passengers: [pax({ extraBags: { outbound: -1 } })] } });
+      expect(negative.status).toBe(400);
+      expect(await seatsLeft(f.flightId)).toBe(6);
+    });
+
+    it('a stored policy in another currency, or no policy, refuses extra bags with 409 and holds nothing; no bags still books', async () => {
+      const f = await createAirlineWithFlight(ctx, { seats: 6 });
+      const user = await createUser(ctx);
+      const noPolicy = await holdFlight(user, { flightId: f.flightId, body: { passengers: [pax({ extraBags: { outbound: 1 } })] } });
+      expect(noPolicy.status).toBe(409);
+      expect(errorFields(noPolicy.body)).toEqual(['passengers.0.extraBags.outbound']);
+
+      await putBaggage(f);
+      await model('BaggagePolicy').updateOne({ airlineId: f.airlineId }, { $set: { currency: 'USD' } });
+      const legacy = await holdFlight(user, { flightId: f.flightId, body: { passengers: [pax({ extraBags: { outbound: 1 } })] } });
+      expect(legacy.status).toBe(409);
+      expect(legacy.body.message).toMatch(/USD.*EGP/);
+      expect(await seatsLeft(f.flightId)).toBe(6);
+      expect((await holdFlight(user, { flightId: f.flightId })).status).toBe(201);
+    });
+  });
+
   describe('rescheduling a flight updates the departure copy on its bookings', () => {
     async function confirmedOn(flightId: string) {
       const user = await createUser(ctx);

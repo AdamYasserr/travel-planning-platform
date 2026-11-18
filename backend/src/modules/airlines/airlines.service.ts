@@ -15,6 +15,7 @@ import { BaggagePolicy } from './schemas/baggage-policy.schema';
 import { CancellationPolicy } from './schemas/cancellation-policy.schema';
 import { User } from '../../users/user.schema';
 import { UserRole } from '../../common/enums/user-role.enum';
+import { PlatformCurrencyService } from '../../common/currency/platform-currency.service';
 
 import {
   CreateAirlineDto,
@@ -43,6 +44,8 @@ export class AirlinesService {
 
     @InjectModel(CancellationPolicy.name)
     private readonly cancellationPolicyModel: Model<CancellationPolicy>,
+
+    private readonly platformCurrency: PlatformCurrencyService,
   ) {}
 
   // Check that the user can manage this airline
@@ -257,7 +260,8 @@ const policyData = {
   pricePerExtraBag: dto.pricePerExtraBag,
   maxExtraBagsPerPassenger:
     dto.maxExtraBagsPerPassenger,
-  currency: dto.currency.trim().toUpperCase(),
+  // FLT-08: extra bags are charged with the booking, so the price must be in the platform currency.
+  currency: this.platformCurrency.resolve(dto.currency),
 };
 
 

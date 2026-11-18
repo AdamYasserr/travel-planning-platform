@@ -93,19 +93,75 @@ export interface SegmentPrice {
   infants: number;
   seatFaresMinor: number;
   infantFaresMinor: number;
+  extraBags: number;
+  bagFeeMinor: number;
+  extraBagsFeeMinor: number;
   subtotalMinor: number;
 }
 
-/** One flight's share of the total, in minor units: seats x fare + infants x infant fare. */
-export function priceSegment(input: { fareMinor: number; seats: number; infants: number }): SegmentPrice {
+/**
+ * One flight's share of the total, in minor units:
+ * seats x fare + infants x infant fare + extra bags x fee per extra bag (free bags cost nothing).
+ */
+export function priceSegment(input: { fareMinor: number; seats: number; infants: number; extraBags?: number; bagFeeMinor?: number }): SegmentPrice {
+  const extraBags = input.extraBags ?? 0;
+  const bagFeeMinor = extraBags > 0 ? (input.bagFeeMinor ?? 0) : 0;
   const seatFaresMinor = input.seats * input.fareMinor;
   const infantFaresMinor = input.infants * infantFareMinor(input.fareMinor);
+  const extraBagsFeeMinor = extraBags * bagFeeMinor;
   return {
     fareMinor: input.fareMinor,
     seats: input.seats,
     infants: input.infants,
     seatFaresMinor,
     infantFaresMinor,
-    subtotalMinor: seatFaresMinor + infantFaresMinor,
+    extraBags,
+    bagFeeMinor,
+    extraBagsFeeMinor,
+    subtotalMinor: seatFaresMinor + infantFaresMinor + extraBagsFeeMinor,
   };
+}
+
+export type Direction = 'outbound' | 'return';
+
+/** What the extra-bag rules need to know about the airline's baggage policy of one flight. */
+export interface BaggageTerms {
+  maxExtraBagsPerPassenger: number;
+  currency: string;
+}
+
+/**
+ * FLT-08: the extra bags asked for on one flight. Over the airline's maximum per passenger: 400 errors.
+ * Bags asked for but impossible to charge (no baggage policy, or a policy priced in another currency than
+ * the platform's): a 409 conflict, so currencies are never mixed. No bags asked for: never an error.
+ */
+export function extraBagRules(
+  passengers: { extraBags?: Partial<Record<Direction, number>> }[],
+  direction: Direction,
+  policy: BaggageTerms | null,
+  platformCurrency: string,
+): { total: number; errors: FieldError[]; conflict: { field: string; message: string } | null } {
+  const errors: FieldError[] = [];
+  let total = 0;
+  let first: string | null = null;
+  passengers.forEach((p, i) => {
+    const bags = p.extraBags?.[direction] ?? 0;
+    if (bags <= 0) return;
+    const field = `passengers.${i}.extraBags.${direction}`;
+    first ??= field;
+    total += bags;
+    if (policy && bags > policy.maxExtraBagsPerPassenger) {
+      errors.push({ field, messages: [`At most ${policy.maxExtraBagsPerPassenger} extra bag(s) per passenger on the ${direction} flight`] });
+    }
+  });
+  let conflict: { field: string; message: string } | null = null;
+  if (first && !policy) {
+    conflict = { field: first, message: `The airline of the ${direction} flight has no baggage policy, so extra bags cannot be booked` };
+  } else if (first && policy && policy.currency.trim().toUpperCase() !== platformCurrency) {
+    conflict = {
+      field: first,
+      message: `Extra bags on the ${direction} flight cannot be booked: the airline prices them in ${policy.currency.toUpperCase()}, not the platform currency ${platformCurrency}`,
+    };
+  }
+  return { total, errors, conflict };
 }
