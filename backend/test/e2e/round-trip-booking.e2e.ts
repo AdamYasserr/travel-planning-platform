@@ -1,7 +1,8 @@
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { startApp, type E2EContext } from './helpers/app';
+import { ETicketService } from '../../src/modules/flight-bookings/e-ticket/e-ticket.service';
 import { confirmBooking, holdFlight } from './helpers/bookings';
-import { createAirlineWithFlight, createUser, day } from './helpers/factories';
+import { at, createAirline, createAirlineWithFlight, createFlight, createUser, day } from './helpers/factories';
 import { seedReference } from './helpers/reference';
 
 /**
@@ -187,6 +188,283 @@ describe('round-trip booking, passengers, extra baggage and rescheduling (FLT-12
       expect(legacy.body.message).toMatch(/USD.*EGP/);
       expect(await seatsLeft(f.flightId)).toBe(6);
       expect((await holdFlight(user, { flightId: f.flightId })).status).toBe(201);
+    });
+  });
+
+  /**
+   * One airline, outbound CAI -> DXB (Economy 1500.00, Business 4000.00) and a return (default DXB -> CAI,
+   * Economy 1350.50, Business 3000.00). Times are UTC on the day `n` days from today.
+   */
+  async function roundTrip(o: { outDay?: number; backDay?: number; outSeats?: number; backSeats?: number; backTo?: string; backDeparture?: string } = {}) {
+    const airline = await createAirline(ctx);
+    const outDay = o.outDay ?? 30;
+    const backDay = o.backDay ?? 35;
+    const outboundId = await createFlight(ctx, airline, {
+      from: 'CAI', to: 'DXB', departure: at(outDay, '08:00'), arrival: at(outDay, '12:00'),
+      cabins: [{ cabinClass: 'Economy', seats: o.outSeats ?? 10, price: 1500 }, { cabinClass: 'Business', seats: 4, price: 4000 }],
+    });
+    const backDeparture = o.backDeparture ?? at(backDay, '08:00');
+    const returnId = await createFlight(ctx, airline, {
+      from: 'DXB', to: o.backTo ?? 'CAI', departure: backDeparture, arrival: new Date(new Date(backDeparture).getTime() + 4 * 3_600_000).toISOString(),
+      cabins: [{ cabinClass: 'Economy', seats: o.backSeats ?? 10, price: 1350.5 }, { cabinClass: 'Business', seats: 4, price: 3000 }],
+    });
+    return { ...airline, outboundId, returnId };
+  }
+  type Trip = Awaited<ReturnType<typeof roundTrip>>;
+  const cabinSeats = async (flightId: string, cabinClass = 'Economy') =>
+    ((await model('CabinInventory').findOne({ flightId, cabinClass }).lean()) as any).availableSeats;
+  const bookRoundTrip = (user: any, t: Trip, body: Record<string, unknown> = {}) =>
+    user.agent.post('/api/flight-bookings').send({
+      outbound: { flightId: t.outboundId, cabinClass: 'Economy' },
+      return: { flightId: t.returnId, cabinClass: 'Economy' },
+      passengers: [pax()],
+      policiesAccepted: true,
+      ...body,
+    });
+  async function confirmedRoundTrip(t: Trip, body: Record<string, unknown> = {}) {
+    const user = await createUser(ctx);
+    const hold = await bookRoundTrip(user, t, body);
+    if (hold.status !== 201) throw new Error(`round trip failed: ${hold.status} ${JSON.stringify(hold.body)}`);
+    const paymentId = await confirmBooking(ctx, user, 'flight', hold.body._id);
+    return { user, bookingId: String(hold.body._id), paymentId, hold };
+  }
+
+  describe('round-trip booking (FLT-12 / FLT-19)', () => {
+    it('one booking, one reference, one payment, two segments; each segment priced at its own cabin; the worked example', async () => {
+      const t = await roundTrip({ outDay: 30, backDay: 35 });
+      await putBaggage(t, { pricePerExtraBag: 250 });
+      const user = await createUser(ctx);
+      const businessBack = ((await model('CabinInventory').findOne({ flightId: t.returnId, cabinClass: 'Business' }).lean()) as any)._id;
+      const hold = await bookRoundTrip(user, t, {
+        return: { flightId: t.returnId, cabinId: String(businessBack) },
+        passengers: [
+          pax({ extraBags: { outbound: 1, return: 2 } }),
+          pax({ fullName: 'Omar Ali', passportNumber: undefined, passportExpiry: undefined, nationalId: '29001011234567' }),
+          pax({ fullName: 'Kid', dateOfBirth: bornBefore(30, 8), extraBags: { return: 1 } }),
+          pax({ fullName: 'Baby', dateOfBirth: bornBefore(30, 1) }),
+        ],
+      });
+      expect(hold.status).toBe(201);
+      // Outbound Economy: 3 x 1500 + 150 (infant) + 1 bag x 250 = 4900.
+      // Return Business:  3 x 3000 + 300 (infant) + 3 bags x 250 = 10050. Total 14950.
+      expect(hold.body).toMatchObject({ tripType: 'round-trip', seatCount: 3, totalPrice: 14950, cabinClass: 'Economy' });
+      expect(hold.body.returnSegment).toMatchObject({ flightId: t.returnId, cabinClass: 'Business', pricePerSeat: 3000 });
+      expect(hold.body.pricing.segments).toEqual([
+        expect.objectContaining({ direction: 'outbound', fare: 1500, infantFare: 150, extraBags: 1, extraBagsFee: 250, subtotal: 4900 }),
+        expect.objectContaining({ direction: 'return', fare: 3000, infantFare: 300, extraBags: 3, extraBagsFee: 750, subtotal: 10050 }),
+      ]);
+      expect(hold.body.passengers.map((p: any) => p.type)).toEqual(['adult', 'adult', 'child', 'infant']);
+      expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId, 'Business')]).toEqual([7, 1]);
+
+      const paymentId = await confirmBooking(ctx, user, 'flight', hold.body._id);
+      const payments_ = await model('Payment').find({ bookingId: hold.body._id }).lean();
+      expect(payments_).toHaveLength(1);
+      expect(payments_[0]).toMatchObject({ amountMinor: 1495000 });
+      expect(String(payments_[0]._id)).toBe(paymentId);
+      expect(await model('FlightBooking').countDocuments({ reference: hold.body.reference })).toBe(1);
+      expect((await bookingOf(hold.body._id)).status).toBe('Confirmed');
+    });
+
+    it('2 adults, a child and an infant with extra bags, in minor units', async () => {
+      const t = await roundTrip();
+      await putBaggage(t, { pricePerExtraBag: 250 });
+      const user = await createUser(ctx);
+      const res = await bookRoundTrip(user, t, { passengers: [
+        pax({ extraBags: { outbound: 1, return: 2 } }), pax({ fullName: 'B' }), pax({ fullName: 'Kid', dateOfBirth: bornBefore(30, 8) }), pax({ fullName: 'Baby', dateOfBirth: bornBefore(30, 1) }),
+      ] });
+      expect(res.status).toBe(201);
+      // Outbound: 3 x 1500.00 + 150.00 + 1 x 250.00 = 4900.00. Return: 3 x 1350.50 + 135.05 + 2 x 250.00 = 4686.55.
+      expect(res.body.totalPrice).toBe(9586.55);
+      expect(await model('FlightBooking').countDocuments({ _id: res.body._id, 'pricing.total': 9586.55 })).toBe(1);
+    });
+
+    it('the one-way request shape is unchanged, and { outbound } alone is also one-way', async () => {
+      const t = await roundTrip();
+      const user = await createUser(ctx);
+      const legacy = await holdFlight(user, { flightId: t.outboundId });
+      expect(legacy.status).toBe(201);
+      expect(legacy.body).toMatchObject({ tripType: 'one-way', totalPrice: 1500 });
+      expect(legacy.body.returnSegment ?? null).toBeNull();
+      const outboundOnly = await bookRoundTrip(user, t, { return: undefined });
+      expect(outboundOnly.status).toBe(201);
+      expect(outboundOnly.body.tripType).toBe('one-way');
+      expect(await cabinSeats(t.returnId)).toBe(10);
+    });
+
+    it('rejects a return that departs before (or exactly at) the outbound arrival: 409 on return.flightId, nothing held', async () => {
+      const t = await roundTrip({ outDay: 30, backDeparture: at(30, '12:00') });
+      const user = await createUser(ctx);
+      const res = await bookRoundTrip(user, t);
+      expect(res.status).toBe(409);
+      expect(errorFields(res.body)).toEqual(['return.flightId']);
+      expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId)]).toEqual([10, 10]);
+      const earlier = await roundTrip({ outDay: 30, backDeparture: at(30, '10:00') });
+      expect((await bookRoundTrip(user, earlier)).status).toBe(409);
+    });
+
+    it('rejects a return that is not the reverse route (400)', async () => {
+      const t = await roundTrip({ backTo: 'LHR' });
+      const res = await bookRoundTrip(await createUser(ctx), t);
+      expect(res.status).toBe(400);
+      expect(errorFields(res.body)).toEqual(['return.flightId']);
+      expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId)]).toEqual([10, 10]);
+    });
+
+    it('a seat shortage on EITHER flight is 409 and holds nothing on both', async () => {
+      const shortReturn = await roundTrip({ outSeats: 5, backSeats: 1 });
+      const user = await createUser(ctx);
+      const two = { passengers: [pax(), pax({ fullName: 'B' })] };
+      const a = await bookRoundTrip(user, shortReturn, two);
+      expect(a.status).toBe(409);
+      expect(errorFields(a.body)).toEqual(['return.flightId']);
+      expect([await cabinSeats(shortReturn.outboundId), await cabinSeats(shortReturn.returnId)]).toEqual([5, 1]);
+
+      const shortOutbound = await roundTrip({ outSeats: 1, backSeats: 5 });
+      const b = await bookRoundTrip(user, shortOutbound, two);
+      expect(b.status).toBe(409);
+      expect(errorFields(b.body)).toEqual(['outbound.flightId']);
+      expect([await cabinSeats(shortOutbound.outboundId), await cabinSeats(shortOutbound.returnId)]).toEqual([1, 5]);
+
+      // An infant needs no seat: 1 adult + 1 infant fits in the single seat left.
+      const ok = await bookRoundTrip(user, shortReturn, { passengers: [pax(), pax({ fullName: 'Baby', dateOfBirth: bornBefore(30, 1) })] });
+      expect(ok.status).toBe(201);
+      expect([await cabinSeats(shortReturn.outboundId), await cabinSeats(shortReturn.returnId)]).toEqual([4, 0]);
+    });
+
+    it('validates the request shape and the cabins', async () => {
+      const t = await roundTrip();
+      const other = await roundTrip();
+      const user = await createUser(ctx);
+      const foreignCabin = String(((await model('CabinInventory').findOne({ flightId: other.returnId }).lean()) as any)._id);
+      const cases: [Record<string, unknown>, number, string][] = [
+        [{ flightId: t.outboundId, cabinClass: 'Economy' }, 400, 'outbound'],
+        [{ outbound: undefined }, 400, 'outbound'],
+        [{ return: { flightId: t.returnId } }, 400, 'return.cabinClass'],
+        [{ return: { flightId: t.returnId, cabinClass: 'Economy', cabinId: foreignCabin } }, 400, 'return.cabinClass'],
+        [{ return: { flightId: t.returnId, cabinId: foreignCabin } }, 400, 'return.cabinId'],
+        [{ return: { flightId: t.returnId, cabinClass: 'First' } }, 400, 'return.cabinClass'],
+        [{ return: { flightId: 'nope', cabinClass: 'Economy' } }, 400, 'return.flightId'],
+        [{ return: { flightId: t.returnId, cabinClass: 'Economy', extra: 1 } }, 400, 'return.extra'],
+      ];
+      for (const [body, status, field] of cases) {
+        const res = await bookRoundTrip(user, t, body);
+        expect({ body, status: res.status }).toEqual({ body, status });
+        expect(errorFields(res.body)).toContain(field);
+      }
+      expect((await bookRoundTrip(user, t, { return: { flightId: '507f1f77bcf86cd799439011', cabinClass: 'Economy' } })).status).toBe(404);
+      expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId)]).toEqual([10, 10]);
+    });
+
+    it('passport expiry is checked against the RETURN arrival', async () => {
+      const t = await roundTrip({ outDay: 30, backDay: 35 });
+      const user = await createUser(ctx);
+      const res = await bookRoundTrip(user, t, { passengers: [pax({ passportExpiry: day(33) })] });
+      expect(res.status).toBe(400);
+      expect(errorFields(res.body)).toEqual(['passengers.0.passportExpiry']);
+      expect((await bookRoundTrip(user, t, { passengers: [pax({ passportExpiry: day(36) })] })).status).toBe(201);
+    });
+
+    it('cancelling uses the OUTBOUND tier and gives back the seats on both flights', async () => {
+      const t = await roundTrip({ outDay: 5, backDay: 30 });
+      const tiers = await t.moderator.agent.put(`/api/airlines/${t.airlineId}/cancellation-policy`).send({
+        tiers: [{ daysBeforeDeparture: 20, refundPercentage: 100 }, { daysBeforeDeparture: 0, refundPercentage: 25 }],
+      });
+      expect(tiers.status).toBe(200);
+      const { user, bookingId } = await confirmedRoundTrip(t);
+      expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId)]).toEqual([9, 9]);
+      const cancel = await user.agent.post(`/api/flight-bookings/${bookingId}/cancel`);
+      expect(cancel.status).toBe(200);
+      // 5 days before the outbound: 25%. (The return is 30 days away, which would have been 100%.)
+      expect(cancel.body.refundPercentage).toBe(25);
+      expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId)]).toEqual([10, 10]);
+    });
+
+    it('cannot be cancelled once the OUTBOUND has departed, but completes only after the RETURN departs', async () => {
+      const t = await roundTrip({ outDay: 30, backDay: 35 });
+      const { user, bookingId } = await confirmedRoundTrip(t);
+      const outboundLeft = new Date(Date.now() - 60_000);
+      await model('FlightBooking').updateOne({ _id: bookingId }, { $set: { departureTime: outboundLeft } });
+      const cancel = await user.agent.post(`/api/flight-bookings/${bookingId}/cancel`);
+      expect(cancel.status).toBe(409);
+      expect(cancel.body.message).toMatch(/after departure/);
+
+      // Between the two flights it is still "upcoming" and still Confirmed.
+      const group = async (g: string) => (await user.agent.get(`/api/flight-bookings?group=${g}`)).body.items.map((b: any) => b._id);
+      expect(await group('upcoming')).toEqual([bookingId]);
+      expect(await group('past')).toEqual([]);
+      await payments().completeFinishedBookings(new Date());
+      expect((await bookingOf(bookingId)).status).toBe('Confirmed');
+
+      const returnDeparture = (await bookingOf(bookingId)).lastDepartureTime as Date;
+      await payments().completeFinishedBookings(new Date(returnDeparture.getTime() - 60_000));
+      expect((await bookingOf(bookingId)).status).toBe('Confirmed');
+      await payments().completeFinishedBookings(new Date(returnDeparture.getTime() + 60_000));
+      expect((await bookingOf(bookingId)).status).toBe('Completed');
+      expect(await group('past')).toEqual([bookingId]);
+      expect(await group('upcoming')).toEqual([]);
+    });
+
+    it('cancelling EITHER flight (FLT-06) cancels the whole round trip with a 100% refund and frees both flights', async () => {
+      for (const which of ['outboundId', 'returnId'] as const) {
+        const t = await roundTrip();
+        const { user, bookingId, paymentId } = await confirmedRoundTrip(t);
+        const pendingUser = await createUser(ctx);
+        const pending = await bookRoundTrip(pendingUser, t);
+        expect([await cabinSeats(t.outboundId), await cabinSeats(t.returnId)]).toEqual([8, 8]);
+
+        const res = await t.moderator.agent.post(`/api/flights/${t[which]}/cancel`);
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({ cancelledBookings: 1, expiredHolds: 1, refunds: 1 });
+        expect((await bookingOf(bookingId)).status).toBe('Cancelled');
+        expect((await bookingOf(pending.body._id)).status).toBe('Expired');
+        const refund = (await model('Refund').findOne({ paymentId }).lean()) as any;
+        expect(refund).toMatchObject({ percentage: 100, status: 'Refunded' });
+        const other = which === 'outboundId' ? t.returnId : t.outboundId;
+        expect(await cabinSeats(other)).toBe(10);
+        expect((await user.agent.get(`/api/flight-bookings/${bookingId}`)).body.status).toBe('Cancelled');
+      }
+    });
+
+    it('the e-ticket (both paths) shows both flights', async () => {
+      const t = await roundTrip();
+      const { user, bookingId } = await confirmedRoundTrip(t);
+      const data = await ctx.get(ETicketService).ticketData({ userId: user.id }, bookingId);
+      const flights = await model('Flight').find({ _id: { $in: [t.outboundId, t.returnId] } }).lean();
+      const number = (id: string) => (flights.find((f: any) => String(f._id) === id) as any).flightNumber;
+      expect(data.flightNumber).toBe(number(t.outboundId));
+      expect(data.departure.code).toBe('CAI');
+      expect(data.return).toMatchObject({ flightNumber: number(t.returnId), cabinClass: 'Economy', departure: { code: 'DXB' }, arrival: { code: 'CAI' } });
+      for (const path of ['bookings', 'flight-bookings']) {
+        const res = await user.agent.get(`/api/${path}/${bookingId}/e-ticket`);
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toMatch(/application\/pdf/);
+      }
+    });
+
+    it('rescheduling: copies follow the return flight; a return before the outbound arrival, or new airports, are 409', async () => {
+      const t = await roundTrip({ outDay: 30, backDay: 35 });
+      const { bookingId } = await confirmedRoundTrip(t);
+      const patch = (flightId: string, body: Record<string, unknown>) => t.moderator.agent.patch(`/api/flights/${flightId}`).send(body);
+
+      const later = new Date(at(36, '09:00'));
+      expect((await patch(t.returnId, { departureTime: later.toISOString(), arrivalTime: new Date(later.getTime() + 4 * 3_600_000).toISOString() })).status).toBe(200);
+      const moved = await bookingOf(bookingId);
+      expect(moved.returnSegment.departureTime).toEqual(later);
+      expect(moved.lastDepartureTime).toEqual(later);
+      expect(moved.departureTime).toEqual(new Date(at(30, '08:00')));
+
+      const tooEarly = new Date(at(30, '11:00'));
+      expect((await patch(t.returnId, { departureTime: tooEarly.toISOString(), arrivalTime: new Date(tooEarly.getTime() + 4 * 3_600_000).toISOString() })).status).toBe(409);
+      expect((await patch(t.outboundId, { arrivalTime: new Date(at(36, '10:00')).toISOString() })).status).toBe(409);
+      expect((await patch(t.outboundId, { arrivalAirport: 'LHR' })).status).toBe(409);
+      expect((await bookingOf(bookingId)).returnSegment.departureTime).toEqual(later);
+      expect(((await model('Flight').findById(t.outboundId).lean()) as any).arrivalAirport).toBe('DXB');
+
+      const outboundLater = new Date(at(31, '08:00'));
+      expect((await patch(t.outboundId, { departureTime: outboundLater.toISOString(), arrivalTime: new Date(outboundLater.getTime() + 4 * 3_600_000).toISOString() })).status).toBe(200);
+      const after = await bookingOf(bookingId);
+      expect(after.departureTime).toEqual(outboundLater);
+      expect(after.lastDepartureTime).toEqual(later);
     });
   });
 

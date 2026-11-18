@@ -643,7 +643,8 @@ describe('PaymentsService', () => {
 
       expect(result).toEqual({ hotels: 2, flights: 1 });
       expect(flightBookingModel.updateMany).toHaveBeenCalledWith(
-        { status: FlightBookingStatus.CONFIRMED, departureTime: { $lte: now } },
+        // FLT-12: completed after the LAST flight's departure (older one-way bookings: their only departure).
+        { status: FlightBookingStatus.CONFIRMED, $or: [{ lastDepartureTime: { $lte: now } }, { lastDepartureTime: null, departureTime: { $lte: now } }] },
         { $set: { status: FlightBookingStatus.COMPLETED, completedAt: now } },
       );
       expect(hotelBookingModel.updateMany).toHaveBeenCalledWith(

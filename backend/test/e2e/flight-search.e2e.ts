@@ -62,7 +62,7 @@ describe('flight search and flight details (FLT-11, 12, 15, 17, 30, GEN-06)', ()
       expect(flight.arrival.utcOffset).toBe('+04:00');
       expect(flight.durationMinutes).toBe(240);
       expect(flight.cabins).toEqual([
-        { cabinClass: 'Economy', price: 1000, currency: 'EGP', seatsRemaining: 5, baggage: { freeBags: 2, maxWeightPerBagKg: 20 }, estimatedTotal: 1000 },
+        { id: expect.any(String), cabinClass: 'Economy', price: 1000, currency: 'EGP', seatsRemaining: 5, baggage: { freeBags: 2, maxWeightPerBagKg: 20 }, estimatedTotal: 1000 },
       ]);
     });
 
@@ -514,8 +514,8 @@ describe('flight search and flight details (FLT-11, 12, 15, 17, 30, GEN-06)', ()
       expect(res.body.departure.airport.iata_code).toBe('CAI');
       expect(res.body.arrival).toMatchObject({ utc: at(30, '12:00'), timeZone: 'Asia/Dubai', utcOffset: '+04:00' });
       expect(res.body.cabins).toEqual([
-        { cabinClass: 'Economy', price: 1000, currency: 'EGP', totalSeats: 8, seatsRemaining: 8, baggage: { freeBags: 1, maxWeightPerBagKg: 23 } },
-        { cabinClass: 'Business', price: 4000, currency: 'EGP', totalSeats: 4, seatsRemaining: 4, baggage: { freeBags: 2, maxWeightPerBagKg: 32 } },
+        { id: expect.any(String), cabinClass: 'Economy', price: 1000, currency: 'EGP', totalSeats: 8, seatsRemaining: 8, baggage: { freeBags: 1, maxWeightPerBagKg: 23 } },
+        { id: expect.any(String), cabinClass: 'Business', price: 4000, currency: 'EGP', totalSeats: 4, seatsRemaining: 4, baggage: { freeBags: 2, maxWeightPerBagKg: 32 } },
       ]);
     });
 

@@ -194,7 +194,7 @@ export class AdministrationService {
       }
       const flight: any = flightMap.get(String(row.flightId));
       const airline: any = flight ? airlineMap.get(String(flight.airlineId)) : undefined;
-      return { ...common, provider: { id: flight ? String(flight.airlineId) : null, name: airline?.name ?? null, flightNumber: flight?.flightNumber ?? null }, dates: { departure: row.departureTime } };
+      return { ...common, provider: { id: flight ? String(flight.airlineId) : null, name: airline?.name ?? null, flightNumber: flight?.flightNumber ?? null }, dates: { departure: row.departureTime, return: row.returnSegment?.departureTime ?? null } };
     });
 
     const total = flightTotal + hotelTotal;
@@ -248,7 +248,7 @@ export class AdministrationService {
     const flightIds = matchingFlights.map((flight) => flight._id);
     if (!flightIds.length) return [];
     const bookings = await this.flightBookings.find({
-      flightId: { $in: flightIds },
+      $or: [{ flightId: { $in: flightIds } }, { 'returnSegment.flightId': { $in: flightIds } }],
       status: { $in: [FlightBookingStatus.CONFIRMED, FlightBookingStatus.PENDING_PAYMENT] },
     }).select('userId').lean().exec();
     return [...new Set(bookings.map((booking) => booking.userId.toString()))];

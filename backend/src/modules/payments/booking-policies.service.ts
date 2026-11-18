@@ -96,6 +96,15 @@ export class BookingPoliciesService {
     }
     const flight = booking as FlightBooking;
     const baggage = flight.baggagePolicy;
+    const terms = (b: NonNullable<FlightBooking['baggagePolicy']>) => ({
+      carryOnAllowanceKg: b.carryOnAllowanceKg,
+      checkedBaggageAllowanceKg: b.checkedBaggageAllowanceKg,
+      freeBagsCount: b.freeBagsCount,
+      maxWeightPerBagKg: b.maxWeightPerBagKg,
+      pricePerExtraBag: b.pricePerExtraBag,
+      maxExtraBagsPerPassenger: b.maxExtraBagsPerPassenger,
+      currency: b.currency,
+    });
     return {
       ...base,
       policies: {
@@ -105,17 +114,9 @@ export class BookingPoliciesService {
             refundPercentage: t.refundPercentage,
           })),
         },
-        baggage: baggage
-          ? {
-              carryOnAllowanceKg: baggage.carryOnAllowanceKg,
-              checkedBaggageAllowanceKg: baggage.checkedBaggageAllowanceKg,
-              freeBagsCount: baggage.freeBagsCount,
-              maxWeightPerBagKg: baggage.maxWeightPerBagKg,
-              pricePerExtraBag: baggage.pricePerExtraBag,
-              maxExtraBagsPerPassenger: baggage.maxExtraBagsPerPassenger,
-              currency: baggage.currency,
-            }
-          : null,
+        baggage: baggage ? terms(baggage) : null,
+        // FLT-12: a round trip also shows the return flight's baggage terms (its airline may differ).
+        ...(flight.returnSegment ? { returnBaggage: flight.returnSegment.baggagePolicy ? terms(flight.returnSegment.baggagePolicy) : null } : {}),
       },
     };
   }

@@ -20,8 +20,11 @@ import { runBookingTransaction } from '../../common/booking/booking-transaction'
 import { currencyExponent } from '../../common/currency/money';
 import {
   FlightBooking,
+  heldCabinIds,
+  onFlight,
   seatsHeld,
 } from '../flight-bookings/schemas/flight-booking.schema';
+import { lastDepartureFilter } from '../../common/booking/booking-groups';
 import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
 import { CabinInventory } from '../flights/schemas/cabin-inventory.schema';
 import {
@@ -669,7 +672,8 @@ export class PaymentsService {
         .exec(),
       this.flightBookingModel
         .updateMany(
-          { status: FlightBookingStatus.CONFIRMED, departureTime: { $lte: now } },
+          // FLT-12: after the LAST flight's departure (the return of a round trip).
+          { status: FlightBookingStatus.CONFIRMED, ...lastDepartureFilter({ $lte: now }) },
           { $set: { status: FlightBookingStatus.COMPLETED, completedAt: now } },
         )
         .exec(),
@@ -710,8 +714,9 @@ export class PaymentsService {
         payload: { bookingType: PaymentBookingType.FLIGHT, flightId: String(flightId), bookingId, refundId },
       });
 
+      // FLT-12: a round trip with this flight as outbound OR return is cancelled (and refunded) as a whole.
       const holds = await this.flightBookingModel
-        .find({ flightId, status: FlightBookingStatus.PENDING_PAYMENT })
+        .find({ ...onFlight(flightId), status: FlightBookingStatus.PENDING_PAYMENT })
         .session(session)
         .exec();
       for (const hold of holds) {
@@ -727,7 +732,7 @@ export class PaymentsService {
       }
 
       const confirmed = await this.flightBookingModel
-        .find({ flightId, status: FlightBookingStatus.CONFIRMED })
+        .find({ ...onFlight(flightId), status: FlightBookingStatus.CONFIRMED })
         .session(session)
         .exec();
       for (const booking of confirmed) {
@@ -773,7 +778,7 @@ export class PaymentsService {
   async expireFlightHoldsForInventory(inventoryId: Types.ObjectId) {
     const expired = await this.flightBookingModel
       .find({
-        cabinInventoryId: inventoryId,
+        $or: [{ cabinInventoryId: inventoryId }, { 'returnSegment.cabinInventoryId': inventoryId }],
         status: FlightBookingStatus.PENDING_PAYMENT,
         holdExpiresAt: { $lte: new Date() },
       })
@@ -1076,15 +1081,7 @@ export class PaymentsService {
         { new: true, session },
       )
       .exec();
-    if (expired) {
-      await this.inventoryModel
-        .updateOne(
-          { _id: expired.cabinInventoryId },
-          { $inc: { availableSeats: seatsHeld(expired) } },
-          { session },
-        )
-        .exec();
-    }
+    if (expired) await this.releaseFlightSeats(expired, session);
     return !!expired;
   }
 
@@ -1092,13 +1089,16 @@ export class PaymentsService {
     booking: FlightBooking,
     session: ClientSession,
   ) {
-    await this.inventoryModel
-      .updateOne(
-        { _id: booking.cabinInventoryId },
-        { $inc: { availableSeats: seatsHeld(booking) } },
-        { session },
-      )
-      .exec();
+    // FLT-12: a round trip gives back its seats on BOTH flights.
+    for (const cabinId of heldCabinIds(booking)) {
+      await this.inventoryModel
+        .updateOne(
+          { _id: cabinId },
+          { $inc: { availableSeats: seatsHeld(booking) } },
+          { session },
+        )
+        .exec();
+    }
   }
 
   private async updateBookingStatus(

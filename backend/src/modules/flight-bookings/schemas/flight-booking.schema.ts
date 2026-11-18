@@ -136,6 +136,34 @@ export class BaggageSnapshot {
 
 export const BaggageSnapshotSchema = SchemaFactory.createForClass(BaggageSnapshot);
 
+/** FLT-12: the return flight of a round trip. The outbound flight is the booking's top-level fields. */
+@Schema({ _id: false })
+export class ReturnSegment {
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Flight', required: true })
+  flightId: Types.ObjectId;
+
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'CabinInventory', required: true })
+  cabinInventoryId: Types.ObjectId;
+
+  @Prop({ type: String, enum: Object.values(CabinClass), required: true })
+  cabinClass: CabinClass;
+
+  /** Copies of the flight's times, kept in step when the flight is rescheduled. */
+  @Prop({ type: Date, required: true })
+  departureTime: Date;
+
+  @Prop({ type: Date, required: true })
+  arrivalTime: Date;
+
+  @Prop({ type: Number, required: true, min: 0.01 })
+  pricePerSeat: number;
+
+  @Prop({ type: BaggageSnapshotSchema, default: null })
+  baggagePolicy?: BaggageSnapshot | null;
+}
+
+export const ReturnSegmentSchema = SchemaFactory.createForClass(ReturnSegment);
+
 @Schema({ timestamps: true })
 export class FlightBooking {
   declare createdAt: Date;
@@ -157,8 +185,27 @@ export class FlightBooking {
   })
   flightId: Types.ObjectId;
 
+  /** Outbound departure (a copy of the flight's). Decides the refund tier and "no cancel after departure". */
   @Prop({ type: Date, required: true })
   departureTime: Date;
+
+  // FLT-12: missing on bookings made before round trips; those are one-way.
+  @Prop({ type: String, enum: ['one-way', 'round-trip'], default: undefined })
+  tripType?: 'one-way' | 'round-trip';
+
+  /** Outbound arrival (a copy of the flight's). Missing on older bookings. */
+  @Prop({ type: Date, default: undefined })
+  arrivalTime?: Date;
+
+  /**
+   * Departure of the LAST flight: the return on a round trip, else the outbound. The booking is Completed
+   * after it. Missing on older bookings, which are one-way: departureTime is used instead.
+   */
+  @Prop({ type: Date, default: undefined })
+  lastDepartureTime?: Date;
+
+  @Prop({ type: ReturnSegmentSchema, default: undefined })
+  returnSegment?: ReturnSegment | null;
 
   @Prop({
     type: MongooseSchema.Types.ObjectId,
@@ -242,6 +289,16 @@ export const FlightBookingSchema =
   SchemaFactory.createForClass(FlightBooking);
 
 /** Seats a booking holds on each of its flights; older bookings held one per passenger. */
+/** Every cabin the booking holds seats on: the outbound cabin, and the return cabin of a round trip. */
+export function heldCabinIds(booking: Pick<FlightBooking, 'cabinInventoryId' | 'returnSegment'>): Types.ObjectId[] {
+  return [booking.cabinInventoryId, ...(booking.returnSegment ? [booking.returnSegment.cabinInventoryId] : [])];
+}
+
+/** Bookings that include this flight, as outbound or as return. */
+export function onFlight(flightId: Types.ObjectId) {
+  return { $or: [{ flightId }, { 'returnSegment.flightId': flightId }] };
+}
+
 export function seatsHeld(booking: Pick<FlightBooking, 'seatCount' | 'passengers'>): number {
   return booking.seatCount ?? booking.passengers.length;
 }
@@ -253,3 +310,8 @@ FlightBookingSchema.index(
 FlightBookingSchema.index({ flightId: 1, status: 1, holdExpiresAt: 1 });
 // FLT-29: the airline's per-flight list, newest first.
 FlightBookingSchema.index({ flightId: 1, status: 1, createdAt: -1 });
+// FLT-12: the same for the return flight of round trips (only those documents are indexed).
+FlightBookingSchema.index(
+  { 'returnSegment.flightId': 1, status: 1, createdAt: -1 },
+  { partialFilterExpression: { 'returnSegment.flightId': { $exists: true } } },
+);

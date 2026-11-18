@@ -17,6 +17,7 @@ import { Post } from '../blog/schemas/post.schema';
 import { PostStatus } from '../blog/enums/post-status.enum';
 import { Itinerary } from '../itineraries/schemas/itinerary.schema';
 import { ItineraryVisibility } from '../itineraries/enums/itinerary-visibility.enum';
+import { lastDepartureFilter } from '../../common/booking/booking-groups';
 
 export interface PublicUser {
   id: string;
@@ -99,7 +100,8 @@ export class UsersService {
 
     const [hotel, flight] = await Promise.all([
       this.hotelBookings.exists({ userId: user._id, status: HotelBookingStatus.CONFIRMED, checkOutDate: { $gt: now } }),
-      this.flightBookings.exists({ userId: user._id, status: FlightBookingStatus.CONFIRMED, departureTime: { $gt: now } }),
+      // FLT-12: a round trip is upcoming until its return departs.
+      this.flightBookings.exists({ userId: user._id, status: FlightBookingStatus.CONFIRMED, ...lastDepartureFilter({ $gt: now }) }),
     ]);
     if (hotel || flight) {
       throw new ConflictException(

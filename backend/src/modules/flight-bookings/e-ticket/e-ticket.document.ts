@@ -2,6 +2,23 @@ import PDFDocument from 'pdfkit';
 
 import { toLocalInstant } from '../../flights/timezone.util';
 
+type Baggage = {
+  freeBagsCount: number;
+  maxWeightPerBagKg: number;
+  carryOnAllowanceKg?: number;
+  checkedBaggageAllowanceKg?: number;
+} | null;
+
+/** The return flight of a round trip (FLT-12), printed after the outbound flight. */
+export interface ETicketReturn {
+  flightNumber: string;
+  airline: { name: string; code: string };
+  departure: { code: string; name: string; timeZone: string; time: Date };
+  arrival: { code: string; name: string; timeZone: string; time: Date };
+  cabinClass: string;
+  baggage: Baggage;
+}
+
 /** Everything printed on an e-ticket (FLT-23). */
 export interface ETicketData {
   reference: string;
@@ -20,6 +37,7 @@ export interface ETicketData {
   } | null;
   totalPaid: number;
   currency: string;
+  return?: ETicketReturn | null;
 }
 
 const localTime = (time: Date, timeZone: string) => {
@@ -28,16 +46,33 @@ const localTime = (time: Date, timeZone: string) => {
 };
 
 /** The ticket as labelled lines. Pure, so its contents are unit-tested; the PDF prints exactly these. */
-export function eTicketLines(t: ETicketData): { label: string; value: string }[] {
-  const baggage = t.baggage
+const baggageText = (b: Baggage) =>
+  b
     ? [
-        `${t.baggage.freeBagsCount} checked bag(s) up to ${t.baggage.maxWeightPerBagKg} kg each`,
-        ...(t.baggage.carryOnAllowanceKg !== undefined ? [`carry-on ${t.baggage.carryOnAllowanceKg} kg`] : []),
+        `${b.freeBagsCount} checked bag(s) up to ${b.maxWeightPerBagKg} kg each`,
+        ...(b.carryOnAllowanceKg !== undefined ? [`carry-on ${b.carryOnAllowanceKg} kg`] : []),
       ].join(', ')
     : 'See the airline baggage policy';
+
+export function eTicketLines(t: ETicketData): { label: string; value: string }[] {
+  const baggage = baggageText(t.baggage);
+  const back = t.return;
+  const returnLines = back
+    ? [
+        { label: 'Return flight', value: back.flightNumber },
+        { label: 'Return airline', value: `${back.airline.name} (${back.airline.code})` },
+        { label: 'Return from', value: `${back.departure.code} - ${back.departure.name}` },
+        { label: 'Return departure', value: localTime(back.departure.time, back.departure.timeZone) },
+        { label: 'Return to', value: `${back.arrival.code} - ${back.arrival.name}` },
+        { label: 'Return arrival', value: localTime(back.arrival.time, back.arrival.timeZone) },
+        { label: 'Return cabin', value: back.cabinClass },
+        { label: 'Return baggage', value: baggageText(back.baggage) },
+      ]
+    : [];
   return [
     { label: 'Booking reference', value: t.reference },
     { label: 'Status', value: t.status },
+    ...(back ? [{ label: 'Trip', value: 'Round trip' }] : []),
     { label: 'Passengers', value: t.passengers.join(', ') },
     { label: 'Airline', value: `${t.airline.name} (${t.airline.code})` },
     { label: 'Flight', value: t.flightNumber },
@@ -46,8 +81,9 @@ export function eTicketLines(t: ETicketData): { label: string; value: string }[]
     { label: 'To', value: `${t.arrival.code} - ${t.arrival.name}` },
     { label: 'Arrival', value: localTime(t.arrival.time, t.arrival.timeZone) },
     { label: 'Cabin', value: t.cabinClass },
-    { label: 'Seat', value: 'Assigned at check-in' },
     { label: 'Baggage', value: baggage },
+    ...returnLines,
+    { label: 'Seat', value: 'Assigned at check-in' },
     { label: 'Total paid', value: `${t.totalPaid.toFixed(2)} ${t.currency.toUpperCase()}` },
   ];
 }

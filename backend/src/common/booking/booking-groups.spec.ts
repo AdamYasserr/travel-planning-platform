@@ -4,10 +4,15 @@ const now = new Date('2030-06-10T12:00:00.000Z');
 const yesterdayNoon = new Date('2030-06-09T12:00:00.000Z');
 
 describe('booking groups (FLT-25, HTL-20)', () => {
+  // FLT-12: a Confirmed flight booking is finished at its LAST departure (older bookings: their only departure).
+  const lastDeparture = (condition: Record<string, Date>) => ({
+    $or: [{ lastDepartureTime: condition }, { lastDepartureTime: null, departureTime: condition }],
+  });
+
   it('upcoming: Confirmed not finished, or a live hold not finished', () => {
     expect(bookingGroupFilter('flight', 'upcoming', now)).toEqual({
       $or: [
-        { status: 'Confirmed', departureTime: { $gt: now } },
+        { status: 'Confirmed', ...lastDeparture({ $gt: now }) },
         { status: 'Pending Payment', holdExpiresAt: { $gt: now }, departureTime: { $gt: now } },
       ],
     });
@@ -23,7 +28,7 @@ describe('booking groups (FLT-25, HTL-20)', () => {
   });
 
   it('past: Completed, or Confirmed and finished before the job ran', () => {
-    expect(bookingGroupFilter('flight', 'past', now)).toEqual({ $or: [{ status: 'Completed' }, { status: 'Confirmed', departureTime: { $lte: now } }] });
+    expect(bookingGroupFilter('flight', 'past', now)).toEqual({ $or: [{ status: 'Completed' }, { status: 'Confirmed', ...lastDeparture({ $lte: now }) }] });
   });
 
   it('cancelled: Cancelled, Expired, or a lapsed hold', () => {

@@ -25,6 +25,12 @@ export class ETicketService {
    * Only a Confirmed or Completed booking has a ticket (409 otherwise).
    */
   async render(viewer: { userId: string; role?: string }, bookingId: string): Promise<{ filename: string; pdf: Buffer }> {
+    const data = await this.ticketData(viewer, bookingId);
+    return { filename: `e-ticket-${data.reference}.pdf`, pdf: await renderETicketPdf(data) };
+  }
+
+  /** What the ticket prints (same access rules as render). */
+  async ticketData(viewer: { userId: string; role?: string }, bookingId: string): Promise<ETicketData> {
     if (!Types.ObjectId.isValid(bookingId)) throw new BadRequestException('Invalid booking ID');
     const booking = await this.bookings.findById(bookingId).lean().exec();
     if (!booking || (viewer.role !== UserRole.ADMIN && String(booking.userId) !== viewer.userId)) {
@@ -34,11 +40,28 @@ export class ETicketService {
       throw new ConflictException(`An e-ticket is only available for a Confirmed or Completed booking (this one is ${booking.status})`);
     }
     const flight = await this.flights.findById(booking.flightId).lean().exec();
-    if (!flight) throw new NotFoundException('The flight of this booking no longer exists');
-    const [airline, airports] = await Promise.all([
-      this.airlines.findById(flight.airlineId).lean().exec(),
-      this.airports.find({ iataCode: { $in: [flight.departureAirport, flight.arrivalAirport] } }).lean().exec(),
+    const back = booking.returnSegment ? await this.flights.findById(booking.returnSegment.flightId).lean().exec() : null;
+    if (!flight || (booking.returnSegment && !back)) throw new NotFoundException('The flight of this booking no longer exists');
+    const [airlines, airports] = await Promise.all([
+      this.airlines.find({ _id: { $in: [flight.airlineId, ...(back ? [back.airlineId] : [])] } }).lean().exec(),
+      this.airports
+        .find({ iataCode: { $in: [flight.departureAirport, flight.arrivalAirport, ...(back ? [back.departureAirport, back.arrivalAirport] : [])] } })
+        .lean()
+        .exec(),
     ]);
+    const airlineOf = (id: unknown) => {
+      const found = airlines.find((a) => String(a._id) === String(id));
+      return { name: found?.name ?? 'Unknown airline', code: found?.code ?? '' };
+    };
+    const baggageOf = (b: FlightBooking['baggagePolicy']) =>
+      b
+        ? {
+            freeBagsCount: b.freeBagsCount,
+            maxWeightPerBagKg: b.maxWeightPerBagKg,
+            carryOnAllowanceKg: b.carryOnAllowanceKg,
+            checkedBaggageAllowanceKg: b.checkedBaggageAllowanceKg,
+          }
+        : null;
     const airport = (code: string) => {
       const found = airports.find((a) => a.iataCode === code);
       return { code, name: found?.name ?? code, timeZone: found?.timeZone ?? 'UTC' };
@@ -47,23 +70,29 @@ export class ETicketService {
     const data: ETicketData = {
       reference,
       status: booking.status,
-      passengers: booking.passengers.map((p) => p.fullName),
+      // Children and infants are marked; adults are printed by name only.
+      passengers: booking.passengers.map((p) => (p.type && p.type !== 'adult' ? `${p.fullName} (${p.type})` : p.fullName)),
       flightNumber: flight.flightNumber,
-      airline: { name: airline?.name ?? 'Unknown airline', code: airline?.code ?? '' },
+      airline: airlineOf(flight.airlineId),
       departure: { ...airport(flight.departureAirport), time: flight.departureTime },
       arrival: { ...airport(flight.arrivalAirport), time: flight.arrivalTime },
       cabinClass: booking.cabinClass,
-      baggage: booking.baggagePolicy
-        ? {
-            freeBagsCount: booking.baggagePolicy.freeBagsCount,
-            maxWeightPerBagKg: booking.baggagePolicy.maxWeightPerBagKg,
-            carryOnAllowanceKg: booking.baggagePolicy.carryOnAllowanceKg,
-            checkedBaggageAllowanceKg: booking.baggagePolicy.checkedBaggageAllowanceKg,
-          }
-        : null,
+      baggage: baggageOf(booking.baggagePolicy),
       totalPaid: booking.totalPrice,
       currency: booking.currency,
+      // FLT-12: a round trip prints its return flight too.
+      return:
+        back && booking.returnSegment
+          ? {
+              flightNumber: back.flightNumber,
+              airline: airlineOf(back.airlineId),
+              departure: { ...airport(back.departureAirport), time: back.departureTime },
+              arrival: { ...airport(back.arrivalAirport), time: back.arrivalTime },
+              cabinClass: booking.returnSegment.cabinClass,
+              baggage: baggageOf(booking.returnSegment.baggagePolicy),
+            }
+          : null,
     };
-    return { filename: `e-ticket-${reference}.pdf`, pdf: await renderETicketPdf(data) };
+    return data;
   }
 }

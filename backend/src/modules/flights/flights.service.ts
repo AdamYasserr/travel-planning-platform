@@ -26,7 +26,7 @@ import { isValidIanaTimeZone, parseFlightInstant } from './timezone.util';
 import { PaymentsService } from '../payments/payments.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/enums/notification-type.enum';
-import { FlightBooking } from '../flight-bookings/schemas/flight-booking.schema';
+import { FlightBooking, onFlight } from '../flight-bookings/schemas/flight-booking.schema';
 import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
 
 import {
@@ -289,14 +289,16 @@ return this.toLocalFlightResponse(flight);
           'Flight is no longer available for editing',
         );
       }
-      if (timesChanged) await this.syncBookingTimes(updated._id, departureTime, session);
+      const airportsChanged = flight.departureAirport !== departureAirport || flight.arrivalAirport !== arrivalAirport;
+      await this.assertRoundTripsStillValid(updated._id, { departureTime, arrivalTime, airportsChanged }, session);
+      if (timesChanged) await this.syncBookingTimes(updated._id, departureTime, arrivalTime, session);
       return updated;
     });
 
     // GEN-01: a new departure or arrival time is announced to every Confirmed booking on the flight.
     if (timesChanged) {
       const affected = await this.flightBookingModel
-        .find({ flightId: updatedFlight._id, status: FlightBookingStatus.CONFIRMED })
+        .find({ ...onFlight(updatedFlight._id), status: FlightBookingStatus.CONFIRMED })
         .select({ _id: 1, userId: 1 })
         .lean()
         .exec();
@@ -315,16 +317,68 @@ return this.toLocalFlightResponse(flight);
   }
 
   /**
-   * Bookings keep a copy of the departure time (completion job, "no cancel after departure", the
-   * refund tier, grouped lists). When the flight is rescheduled, the copy on every booking that is
-   * not final yet (Pending Payment or Confirmed) follows, inside the caller's transaction.
+   * Bookings keep copies of their flights' times (completion job, "no cancel after departure", the refund
+   * tier, grouped lists). When a flight is rescheduled, the copies on every booking that is not final yet
+   * (Pending Payment or Confirmed) follow, inside the caller's transaction:
+   *  - this flight as the outbound: departureTime and arrivalTime, and lastDepartureTime when one-way;
+   *  - this flight as the return of a round trip: returnSegment's times and lastDepartureTime.
    */
-  private async syncBookingTimes(flightId: Types.ObjectId, departureTime: Date, session: ClientSession) {
+  private async syncBookingTimes(flightId: Types.ObjectId, departureTime: Date, arrivalTime: Date, session: ClientSession) {
     const live = { $in: [FlightBookingStatus.PENDING_PAYMENT, FlightBookingStatus.CONFIRMED] };
     await this.flightBookingModel
-      .updateMany({ flightId, status: live } as never, { $set: { departureTime } }, { session })
+      .updateMany(
+        { flightId, status: live, returnSegment: null } as never,
+        { $set: { departureTime, arrivalTime, lastDepartureTime: departureTime } },
+        { session },
+      )
+      .exec();
+    await this.flightBookingModel
+      .updateMany(
+        { flightId, status: live, returnSegment: { $ne: null } } as never,
+        { $set: { departureTime, arrivalTime } },
+        { session },
+      )
+      .exec();
+    await this.flightBookingModel
+      .updateMany(
+        { 'returnSegment.flightId': flightId, status: live } as never,
+        { $set: { 'returnSegment.departureTime': departureTime, 'returnSegment.arrivalTime': arrivalTime, lastDepartureTime: departureTime } },
+        { session },
+      )
       .exec();
   }
+
+  /**
+   * FLT-12: an edit may not break a live (Pending Payment or Confirmed) round trip that uses this flight:
+   * 409 if the return would depart at or before the outbound arrival, or if the flight's airports change
+   * (the return must stay the reverse route).
+   */
+  private async assertRoundTripsStillValid(
+    flightId: Types.ObjectId,
+    next: { departureTime: Date; arrivalTime: Date; airportsChanged: boolean },
+    session: ClientSession,
+  ) {
+    const live = { $in: [FlightBookingStatus.PENDING_PAYMENT, FlightBookingStatus.CONFIRMED] };
+    const roundTrips = { ...onFlight(flightId), status: live, returnSegment: { $ne: null } };
+    if (next.airportsChanged && (await this.flightBookingModel.exists(roundTrips as never).session(session))) {
+      throw new ConflictException('The airports of a flight that is part of a booked round trip cannot be changed');
+    }
+    // One operation at a time: a transaction's session must not run operations in parallel.
+    // This flight is the outbound: its new arrival must stay before the return's departure.
+    const returnTooEarly = await this.flightBookingModel
+      .exists({ flightId, status: live, 'returnSegment.departureTime': { $lte: next.arrivalTime } } as never)
+      .session(session);
+    // This flight is the return: its new departure must stay after the outbound arrival.
+    const outboundTooLate = await this.flightBookingModel
+      .exists({ 'returnSegment.flightId': flightId, status: live, arrivalTime: { $gte: next.departureTime } } as never)
+      .session(session);
+    if (returnTooEarly || outboundTooLate) {
+      throw new ConflictException(
+        'This change would make the return flight of a booked round trip depart before the outbound flight arrives',
+      );
+    }
+  }
+
 
 
   // FLT-06: Cancel a flight

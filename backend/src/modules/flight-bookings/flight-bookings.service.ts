@@ -33,6 +33,7 @@ import {
   infantFareMinor,
   passengerRuleErrors,
   priceSegment,
+  roundTripProblems,
   seatsFor,
   type Direction,
   type SegmentPrice,
@@ -43,6 +44,7 @@ interface SegmentRequest {
   direction: Direction;
   flightId: string;
   cabinClass?: CabinClass;
+  cabinId?: string;
   field: { flight: string; cabin: string };
 }
 
@@ -81,9 +83,10 @@ export class FlightBookingsService {
   ) {}
 
   /**
-   * Creates the booking, which IS the hold: one transaction takes the seats (adults + children) on the
-   * flight and creates a Pending Payment booking for 10 minutes. Not enough seats: 409, nothing held.
-   * The price is computed here only: adults and children pay the cabin fare, infants 10% of it.
+   * Creates the booking, which IS the hold: one transaction takes the seats (adults + children) on EVERY
+   * flight of the trip (one-way, or outbound + return) and creates one Pending Payment booking for 10
+   * minutes. Not enough seats on any flight: 409, nothing held. The price is computed here only: per
+   * flight, adults and children pay that cabin's fare, infants 10% of it, plus the extra bags.
    */
   async create(userId: string, dto: CreateFlightBookingDto) {
     if (!Types.ObjectId.isValid(userId)) {
@@ -95,6 +98,11 @@ export class FlightBookingsService {
     for (const request of requests) segments.push(await this.loadSegment(request, now));
     const outbound = segments[0];
     const last = segments[segments.length - 1];
+
+    // FLT-12: the return flies the reverse route (400) and departs after the outbound lands (409).
+    const trip = segments.length === 2 ? roundTripProblems(outbound.flight, last.flight) : { errors: [], conflict: null };
+    if (trip.errors.length) throw fieldErrors(trip.errors);
+    if (trip.conflict) throw fieldConflict('return.flightId', trip.conflict);
 
     const errors: FieldError[] = passengerRuleErrors(dto.passengers, {
       outboundDeparture: outbound.flight.departureTime,
@@ -149,11 +157,26 @@ export class FlightBookingsService {
       const totalMinor = held.reduce((sum, h) => sum + h.price.subtotalMinor, 0);
       const outboundCabin = held[0].cabin;
       const baggagePolicy = outbound.baggagePolicy;
+      const back = held[1];
 
       const bookingData = {
         userId: new Types.ObjectId(userId),
         flightId: outbound.flight._id,
         departureTime: outbound.flight.departureTime,
+        arrivalTime: outbound.flight.arrivalTime,
+        tripType: (back ? 'round-trip' : 'one-way') as 'round-trip' | 'one-way',
+        lastDepartureTime: last.flight.departureTime,
+        returnSegment: back
+          ? {
+              flightId: back.segment.flight._id,
+              cabinInventoryId: back.cabin._id,
+              cabinClass: back.cabin.cabinClass,
+              departureTime: back.segment.flight.departureTime,
+              arrivalTime: back.segment.flight.arrivalTime,
+              pricePerSeat: back.cabin.price,
+              baggagePolicy: this.baggageSnapshot(back.segment.baggagePolicy, back.cabin),
+            }
+          : undefined,
         cabinInventoryId: outboundCabin._id,
         cabinClass: outboundCabin.cabinClass,
         passengers: dto.passengers.map((passenger, i) => ({
@@ -196,17 +219,7 @@ export class FlightBookingsService {
         holdExpiresAt: new Date(now.getTime() + BOOKING_HOLD_DURATION_MS),
         reference: `FLT-${randomUUID()}`,
         policiesAcceptedAt: dto.policiesAccepted === true ? now : null,
-        baggagePolicy: baggagePolicy
-          ? {
-              carryOnAllowanceKg: baggagePolicy.carryOnAllowanceKg,
-              checkedBaggageAllowanceKg: baggagePolicy.checkedBaggageAllowanceKg,
-              pricePerExtraBag: baggagePolicy.pricePerExtraBag,
-              maxExtraBagsPerPassenger: baggagePolicy.maxExtraBagsPerPassenger,
-              currency: baggagePolicy.currency,
-              freeBagsCount: outboundCabin.freeBagsCount,
-              maxWeightPerBagKg: outboundCabin.maxWeightPerBagKg,
-            }
-          : null,
+        baggagePolicy: this.baggageSnapshot(baggagePolicy, outboundCabin),
         // The refund tier of the whole booking is decided by the OUTBOUND airline's policy and departure.
         cancellationTiers: [...(cancellationPolicy?.tiers ?? [])]
           .sort((a, b) => b.daysBeforeDeparture - a.daysBeforeDeparture)
@@ -269,16 +282,60 @@ export class FlightBookingsService {
     );
   }
 
-  /** The flights asked for, outbound first. */
+  /** The baggage terms snapshotted on a flight of the booking (PAY-02), or null without a policy. */
+  private baggageSnapshot(policy: BaggagePolicy | null, cabin: CabinInventory) {
+    return policy
+      ? {
+          carryOnAllowanceKg: policy.carryOnAllowanceKg,
+          checkedBaggageAllowanceKg: policy.checkedBaggageAllowanceKg,
+          pricePerExtraBag: policy.pricePerExtraBag,
+          maxExtraBagsPerPassenger: policy.maxExtraBagsPerPassenger,
+          currency: policy.currency,
+          freeBagsCount: cabin.freeBagsCount,
+          maxWeightPerBagKg: cabin.maxWeightPerBagKg,
+        }
+      : null;
+  }
+
+  /**
+   * The flights asked for, outbound first. One-way: { flightId, cabinClass } (as before) or { outbound }.
+   * Round trip: { outbound, return }. Each segment names its cabin by cabinClass OR cabinId.
+   */
   private segmentRequests(dto: CreateFlightBookingDto): SegmentRequest[] {
-    return [
-      {
-        direction: 'outbound',
-        flightId: dto.flightId,
-        cabinClass: dto.cabinClass,
-        field: { flight: 'flightId', cabin: 'cabinClass' },
-      },
-    ];
+    const errors: FieldError[] = [];
+    const add = (field: string, message: string) => errors.push({ field, messages: [message] });
+    const legacy = dto.flightId !== undefined || dto.cabinClass !== undefined;
+    if (legacy && (dto.outbound || dto.return)) {
+      add(dto.outbound ? 'outbound' : 'return', 'Send either flightId and cabinClass (one-way) or outbound/return, not both');
+    } else if (legacy) {
+      if (dto.flightId === undefined) add('flightId', 'flightId is required');
+      if (dto.cabinClass === undefined) add('cabinClass', 'cabinClass is required');
+    } else if (!dto.outbound) {
+      add(dto.return ? 'outbound' : 'flightId', dto.return ? 'outbound is required for a round trip' : 'flightId (one-way) or outbound is required');
+    }
+    for (const direction of ['outbound', 'return'] as const) {
+      const segment = dto[direction];
+      if (segment && (segment.cabinClass === undefined) === (segment.cabinId === undefined)) {
+        add(`${direction}.cabinClass`, 'Send exactly one of cabinClass or cabinId');
+      }
+    }
+    if (errors.length) throw fieldErrors(errors);
+
+    if (legacy) {
+      return [{ direction: 'outbound', flightId: dto.flightId!, cabinClass: dto.cabinClass, field: { flight: 'flightId', cabin: 'cabinClass' } }];
+    }
+    return (['outbound', 'return'] as const)
+      .filter((direction) => dto[direction])
+      .map((direction) => {
+        const segment = dto[direction]!;
+        return {
+          direction,
+          flightId: segment.flightId,
+          cabinClass: segment.cabinClass,
+          cabinId: segment.cabinId,
+          field: { flight: `${direction}.flightId`, cabin: `${direction}.${segment.cabinId !== undefined ? 'cabinId' : 'cabinClass'}` },
+        };
+      });
   }
 
   /**
@@ -295,12 +352,20 @@ export class FlightBookingsService {
     if (!airline?.isActive) {
       throw fieldConflict(request.field.flight, 'Flight is not available for booking: the airline is inactive');
     }
+    // A cabin id must be a cabin OF this flight; looking it up together with the flight id enforces that.
     const cabin = await this.inventoryModel
-      .findOne({ flightId: flight._id, cabinClass: request.cabinClass })
+      .findOne(
+        request.cabinId !== undefined
+          ? { _id: new Types.ObjectId(request.cabinId), flightId: flight._id }
+          : { flightId: flight._id, cabinClass: request.cabinClass },
+      )
       .lean<CabinInventory & { _id: Types.ObjectId }>()
       .exec();
     if (!cabin) {
-      throw fieldErrors([{ field: request.field.cabin, messages: [`This flight has no ${request.cabinClass} cabin`] }]);
+      throw fieldErrors([{
+        field: request.field.cabin,
+        messages: [request.cabinId !== undefined ? 'This cabin does not belong to this flight' : `This flight has no ${request.cabinClass} cabin`],
+      }]);
     }
     const baggagePolicy = await this.baggagePolicyModel.findOne({ airlineId: flight.airlineId }).lean().exec();
     return { ...request, flight, cabin, baggagePolicy };

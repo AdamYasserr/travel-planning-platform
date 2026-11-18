@@ -5,6 +5,7 @@ import {
   infantFareMinor,
   passengerRuleErrors,
   priceSegment,
+  roundTripProblems,
   seatsFor,
 } from './booking-rules';
 
@@ -108,5 +109,25 @@ describe('extra bags (FLT-08)', () => {
     expect(priceSegment({ fareMinor: 150000, seats: 3, infants: 1, extraBags: 1, bagFeeMinor: 25000 }).subtotalMinor).toBe(490000);
     // Return fare 1350.50, 3 seats, 1 infant, 3 extra bags at 300.00 = 5086.55. Total 9986.55.
     expect(priceSegment({ fareMinor: 135050, seats: 3, infants: 1, extraBags: 3, bagFeeMinor: 30000 }).subtotalMinor).toBe(508655);
+  });
+});
+
+describe('round-trip route and times (FLT-12)', () => {
+  const outbound = { departureAirport: 'CAI', arrivalAirport: 'DXB', departureTime: new Date('2027-06-15T08:00:00Z'), arrivalTime: new Date('2027-06-15T12:00:00Z') };
+  const back = (over: Partial<typeof outbound> = {}) => ({ departureAirport: 'DXB', arrivalAirport: 'CAI', departureTime: new Date('2027-06-20T08:00:00Z'), arrivalTime: new Date('2027-06-20T12:00:00Z'), ...over });
+
+  it('accepts the reverse route departing after the outbound arrival', () => {
+    expect(roundTripProblems(outbound, back())).toEqual({ errors: [], conflict: null });
+    expect(roundTripProblems(outbound, back({ departureTime: new Date('2027-06-15T12:00:01Z') })).conflict).toBeNull();
+  });
+
+  it('rejects a return that departs at or before the outbound arrival (UTC)', () => {
+    expect(roundTripProblems(outbound, back({ departureTime: new Date('2027-06-15T12:00:00Z') })).conflict).toMatch(/before the outbound arrival/);
+    expect(roundTripProblems(outbound, back({ departureTime: new Date('2027-06-15T10:00:00Z') })).conflict).not.toBeNull();
+  });
+
+  it('rejects a return that is not the reverse route', () => {
+    expect(roundTripProblems(outbound, back({ arrivalAirport: 'LHR' })).errors.map((e) => e.field)).toEqual(['return.flightId']);
+    expect(roundTripProblems(outbound, back({ departureAirport: 'CAI', arrivalAirport: 'DXB' })).errors).toHaveLength(1);
   });
 });

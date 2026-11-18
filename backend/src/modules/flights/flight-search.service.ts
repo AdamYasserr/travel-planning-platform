@@ -176,6 +176,8 @@ export class FlightSearchService {
       cabins: [...row.cabins]
         .sort((a, b) => a.price - b.price)
         .map((cabin) => ({
+          // FLT-12: the cabin id can be sent as outbound.cabinId / return.cabinId when booking.
+          id: String(cabin._id),
           cabinClass: cabin.cabinClass,
           price: cabin.price,
           currency: cabin.currency,
@@ -209,6 +211,7 @@ export class FlightSearchService {
       ...this.presentLeg(flight, airline, lookups),
       bookable,
       cabins: cabins.map((cabin: any) => ({
+        id: String(cabin._id),
         cabinClass: cabin.cabinClass,
         price: cabin.price,
         currency: cabin.currency,

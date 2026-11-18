@@ -165,3 +165,29 @@ export function extraBagRules(
   }
   return { total, errors, conflict };
 }
+
+export interface FlightLeg {
+  departureAirport: string;
+  arrivalAirport: string;
+  departureTime: Date;
+  arrivalTime: Date;
+}
+
+/**
+ * FLT-12: a return flight must fly the reverse route (400) and depart strictly AFTER the outbound
+ * arrival, compared in UTC (409, a scheduling conflict). Both are reported on return.flightId.
+ */
+export function roundTripProblems(outbound: FlightLeg, back: FlightLeg): { errors: FieldError[]; conflict: string | null } {
+  const errors: FieldError[] = [];
+  if (back.departureAirport !== outbound.arrivalAirport || back.arrivalAirport !== outbound.departureAirport) {
+    errors.push({
+      field: 'return.flightId',
+      messages: [`The return flight must fly ${outbound.arrivalAirport} to ${outbound.departureAirport} (it flies ${back.departureAirport} to ${back.arrivalAirport})`],
+    });
+  }
+  const conflict =
+    back.departureTime.getTime() > outbound.arrivalTime.getTime()
+      ? null
+      : `The return flight departs at ${back.departureTime.toISOString()}, before the outbound arrival at ${outbound.arrivalTime.toISOString()}`;
+  return { errors, conflict };
+}

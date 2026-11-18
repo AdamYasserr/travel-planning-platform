@@ -83,12 +83,51 @@ export class FlightBookingPassengerDto {
   extraBags?: ExtraBagsDto;
 }
 
-export class CreateFlightBookingDto {
+/** FLT-12: one flight of the trip. Choose the cabin by cabinClass OR cabinId (exactly one). */
+export class FlightSegmentDto {
   @IsMongoId()
   flightId: string;
 
+  @ApiPropertyOptional({ enum: CabinClass })
+  @IsOptional()
   @IsEnum(CabinClass)
-  cabinClass: CabinClass;
+  cabinClass?: CabinClass;
+
+  @ApiPropertyOptional({ description: 'Cabin id from flight search or flight details (cabins[].id).' })
+  @IsOptional()
+  @IsMongoId()
+  cabinId?: string;
+}
+
+/**
+ * One-way: { flightId, cabinClass, passengers } as before, or { outbound, passengers }.
+ * Round trip: { outbound, return, passengers }: ONE booking, ONE reference, ONE payment, two flights.
+ */
+export class CreateFlightBookingDto {
+  @ApiPropertyOptional({ description: 'One-way booking (with cabinClass). Use outbound/return instead for a round trip.' })
+  @IsOptional()
+  @IsMongoId()
+  flightId?: string;
+
+  @ApiPropertyOptional({ enum: CabinClass })
+  @IsOptional()
+  @IsEnum(CabinClass)
+  cabinClass?: CabinClass;
+
+  @ApiPropertyOptional({ type: FlightSegmentDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => FlightSegmentDto)
+  outbound?: FlightSegmentDto;
+
+  @ApiPropertyOptional({
+    type: FlightSegmentDto,
+    description: 'Round trip: departs after the outbound arrival, on the reverse route. Its cabin class may differ; it is priced at its own cabin fare.',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => FlightSegmentDto)
+  return?: FlightSegmentDto;
 
   @ApiProperty({
     description:
