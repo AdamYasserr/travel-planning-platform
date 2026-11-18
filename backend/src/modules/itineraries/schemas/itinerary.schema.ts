@@ -101,3 +101,9 @@ export class Itinerary {
 }
 
 export const ItinerarySchema = SchemaFactory.createForClass(Itinerary);
+
+// ITN-20: the public search (visibility first, then the filter fields).
+ItinerarySchema.index({ visibility: 1, createdAt: -1 });
+ItinerarySchema.index({ visibility: 1, startDate: 1 });
+ItinerarySchema.index({ visibility: 1, "days.cityId": 1 });
+ItinerarySchema.index({ visibility: 1, countryIds: 1 });

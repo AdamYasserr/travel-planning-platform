@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import sharp from 'sharp';
 
 import { startApp, type E2EContext } from './helpers/app';
@@ -35,6 +36,122 @@ describe('itineraries: days, budget, images, public view, clone and context sear
     return ids;
   }
   const view = async (user: TestUser, id: string) => (await user.agent.get(`/api/itineraries/${id}`)).body;
+
+  describe('public search and detail (ITN-20, ITN-21)', () => {
+    const search = (q = '', agent: { get: (url: string) => any } = ctx.http()) => agent.get(`/api/itineraries/public/search${q}`);
+    const ids = (res: any) => res.body.items.map((i: any) => i.id).sort();
+
+    /** A public itinerary with days, an activity (with a cost), a budget entry, a transport cost and linked bookings. */
+    async function publicTrip(owner: TestUser, body: Record<string, unknown> = {}, cities = ['cairo']) {
+      const id = await newItinerary(owner, { visibility: 'public', ...body });
+      const dayIds = await addDays(owner, id, cities);
+      await owner.agent.post(`/api/itineraries/${id}/days/${dayIds[0]}/activities`).send({ name: 'Pyramids', description: 'Visit the plateau', time: '10:00', cost: 77 });
+      await owner.agent.post(`/api/itineraries/${id}/days/${dayIds[0]}/budgets`).send({ description: 'Secret lunch', category: 'food', amount: 123, currency: 'EGP', type: 'actual' });
+      await owner.agent.post(`/api/itineraries/${id}/transport-costs`).send({ mode: 'Train', fromCityId: 'cairo', toCityId: 'dubai', amount: 321, currency: 'EGP', dayId: dayIds[0] });
+      await model('Itinerary').updateOne({ _id: id }, { $set: { hotelBookingIds: [new Types.ObjectId()], flightBookingIds: [new Types.ObjectId()] } });
+      return { id, dayIds };
+    }
+
+    it('lists and shows only public itineraries; a private one is 404 for everyone, the owner included', async () => {
+      const owner = await createUser(ctx);
+      const other = await createUser(ctx);
+      const open = await publicTrip(owner, { title: 'Open trip', countryIds: ['US'] });
+      const hidden = await publicTrip(owner, { title: 'Hidden trip', countryIds: ['US'], visibility: 'private' });
+
+      expect(ids(await search('?country=US'))).toEqual([open.id]);
+      expect(ids(await search('?country=US', other.agent))).toEqual([open.id]);
+      expect((await ctx.http().get(`/api/itineraries/public/${open.id}`)).status).toBe(200);
+      for (const agent of [ctx.http(), other.agent, owner.agent]) {
+        const res = await agent.get(`/api/itineraries/public/${hidden.id}`);
+        expect(res.status).toBe(404);
+      }
+      expect((await ctx.http().get('/api/itineraries/public/507f1f77bcf86cd799439011')).status).toBe(404);
+      expect((await ctx.http().get('/api/itineraries/public/not-an-id')).status).toBe(400);
+
+      // Making it private again takes it out at once; the owner's own routes still work.
+      expect((await owner.agent.patch(`/api/itineraries/${open.id}`).send({ visibility: 'private' })).status).toBe(200);
+      expect(ids(await search('?country=US'))).toEqual([]);
+      expect((await ctx.http().get(`/api/itineraries/public/${open.id}`)).status).toBe(404);
+      expect((await owner.agent.get(`/api/itineraries/${open.id}`)).status).toBe(200);
+    });
+
+    it('shows no budgets, transport costs, bookings, activity costs, owner id or e-mail', async () => {
+      const owner = await createUser(ctx);
+      const trip = await publicTrip(owner, { title: 'Leak check', countryIds: ['DE'] });
+      const detail = await ctx.http().get(`/api/itineraries/public/${trip.id}`);
+      const list = await search('?country=DE');
+      for (const body of [detail.body, list.body]) {
+        const text = JSON.stringify(body);
+        for (const secret of ['Secret lunch', 'budgets', 'transportCosts', 'hotelBookingIds', 'flightBookingIds', 'linkedBookings', 'ownerId', owner.id, owner.email, 'displayCurrency', '"cost"', '"amount"', '"currency"']) {
+          expect(text).not.toContain(secret);
+        }
+      }
+      expect(detail.body).toMatchObject({
+        id: trip.id, title: 'Leak check', author: { name: owner.name },
+        days: [{ dayNumber: 1, date: expect.any(String), cityId: 'cairo', activities: [{ name: 'Pyramids', description: 'Visit the plateau', time: '10:00', images: [] }] }],
+        cityGroups: [{ cityId: 'cairo', dayCount: 1 }],
+      });
+      expect(Object.keys(detail.body.days[0].activities[0]).sort()).toEqual(['description', 'id', 'images', 'name', 'time']);
+      expect(list.body.items[0]).toMatchObject({ id: trip.id, title: 'Leak check', dayCount: 1, cities: ['cairo'], author: { name: owner.name } });
+    });
+
+    it('filters by city, country and date range (an itinerary without an end date runs for its days)', async () => {
+      const owner = await createUser(ctx);
+      const a = await publicTrip(owner, { title: 'A', countryIds: ['JP'], startDate: day(100), endDate: day(110) }, ['tokyo']);
+      const b = await publicTrip(owner, { title: 'B', countryIds: ['JP'], startDate: day(200) }, ['tokyo', 'tokyo', 'cairo']);
+      const c = await publicTrip(owner, { title: 'C', countryIds: ['FR'], startDate: day(100), endDate: day(110) }, ['paris']);
+
+      expect(ids(await search('?country=JP'))).toEqual([a.id, b.id].sort());
+      expect(ids(await search('?country=jp'))).toEqual([a.id, b.id].sort());
+      expect(ids(await search('?city=paris'))).toEqual([c.id]);
+      expect(ids(await search('?city=cairo&country=JP'))).toEqual([b.id]);
+      expect(ids(await search(`?country=JP&from=${day(105)}&to=${day(150)}`))).toEqual([a.id]);
+      expect(ids(await search(`?country=JP&from=${day(111)}`))).toEqual([b.id]);
+      expect(ids(await search(`?country=JP&to=${day(150)}`))).toEqual([a.id]);
+      expect(ids(await search(`?country=JP&from=${day(202)}&to=${day(202)}`))).toEqual([b.id]);
+      expect(ids(await search(`?country=JP&from=${day(203)}`))).toEqual([]);
+      expect(ids(await search(`?country=JP&from=${day(110)}&to=${day(110)}`))).toEqual([a.id]);
+      expect(ids(await search(`?country=JP&to=${day(99)}`))).toEqual([]);
+      expect(ids(await search(`?city=tokyo&country=FR`))).toEqual([]);
+    });
+
+    it('400 for a bad filter, paged 10 by default, limit up to 100, no sign-in needed', async () => {
+      for (const q of ['?city=a%20b', '?country=EGY', '?from=2026-13-01', '?to=tomorrow', `?from=${day(10)}&to=${day(5)}`, '?page=0', '?limit=101', '?limit=ten', '?unknown=1']) {
+        const res = await search(q);
+        expect({ q, status: res.status }).toEqual({ q, status: 400 });
+      }
+      const owner = await createUser(ctx);
+      for (let i = 0; i < 12; i++) await newItinerary(owner, { title: `Page ${i}`, countryIds: ['SA'], visibility: 'public' });
+      const first = await search('?country=SA');
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({ page: 1, limit: 10, total: 12, pages: 2 });
+      expect(first.body.items).toHaveLength(10);
+      expect((await search('?country=SA&page=2')).body.items).toHaveLength(2);
+      expect((await search('?country=SA&limit=100')).body.items).toHaveLength(12);
+    });
+
+    it('a deactivated author is "Deleted user"; the images of a public itinerary are public only while it is public', async () => {
+      const owner = await createUser(ctx);
+      const trip = await publicTrip(owner, { title: 'Pictures', countryIds: ['GB'] });
+      const activityId = String(((await model('Itinerary').findById(trip.id).lean()) as any).days[0].activities[0]._id);
+      const png = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#00aa55' } }).png().toBuffer();
+      const up = await owner.agent.post(`/api/activities/${activityId}/images`).attach('file', png, { filename: 'a.png', contentType: 'image/png' });
+      expect(up.status).toBe(201);
+
+      const detail = await ctx.http().get(`/api/itineraries/public/${trip.id}`);
+      const url = detail.body.days[0].activities[0].images[0].url;
+      expect(url).toBe(`/api/media/public/${up.body.media.id}/content`);
+      expect((await ctx.http().get(url)).status).toBe(200);
+
+      await model('User').updateOne({ _id: owner.id }, { $set: { isActive: false, deactivatedAt: new Date() } });
+      expect((await ctx.http().get(`/api/itineraries/public/${trip.id}`)).body.author).toEqual({ name: 'Deleted user' });
+      expect((await search('?country=GB')).body.items[0].author).toEqual({ name: 'Deleted user' });
+      await model('User').updateOne({ _id: owner.id }, { $set: { isActive: true, deactivatedAt: null } });
+
+      await model('Itinerary').updateOne({ _id: trip.id }, { $set: { visibility: 'private' } });
+      expect((await ctx.http().get(url)).status).toBe(404);
+    });
+  });
 
   describe('activity images and upload limits (ITN-12, GEN-08)', () => {
     const png = () => sharp({ create: { width: 4, height: 4, channels: 3, background: '#cc3300' } }).png().toBuffer();

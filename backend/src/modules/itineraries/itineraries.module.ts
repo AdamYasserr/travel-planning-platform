@@ -11,7 +11,10 @@ import {
 } from "../hotel-bookings/schemas/hotel-booking.schema";
 import { MediaModule } from "../media/media.module";
 import { ReferenceDataModule } from "../reference-data/reference-data.module";
+import { User, UserSchema } from "../../users/user.schema";
 import { ItinerariesController } from "./itineraries.controller";
+import { PublicItinerariesController } from "./public-itineraries.controller";
+import { PublicItinerariesService } from "./public-itineraries.service";
 import { ItineraryItemsController } from "./itinerary-items.controller";
 import { ItinerariesService } from "./itineraries.service";
 import { Itinerary, ItinerarySchema } from "./schemas/itinerary.schema";
@@ -25,10 +28,12 @@ import { Itinerary, ItinerarySchema } from "./schemas/itinerary.schema";
       { name: Itinerary.name, schema: ItinerarySchema },
       { name: HotelBooking.name, schema: HotelBookingSchema },
       { name: FlightBooking.name, schema: FlightBookingSchema },
+      { name: User.name, schema: UserSchema },
     ]),
   ],
-  controllers: [ItinerariesController, ItineraryItemsController],
-  providers: [ItinerariesService],
+  // The public controller comes first so `itineraries/public/...` is never matched by `itineraries/:id`.
+  controllers: [PublicItinerariesController, ItinerariesController, ItineraryItemsController],
+  providers: [ItinerariesService, PublicItinerariesService],
   exports: [ItinerariesService],
 })
 export class ItinerariesModule {}
