@@ -131,6 +131,7 @@ describe('MediaService GEN-08 validation', () => {
       postModel as never,
       commentModel as never,
       storage as never,
+      {} as never,
     );
   });
 

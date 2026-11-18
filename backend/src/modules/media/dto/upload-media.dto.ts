@@ -8,6 +8,8 @@ export enum MediaTargetType {
   AIRLINE = 'airline',
   POST = 'post',
   ITINERARY = 'itinerary',
+  /** ITN-12: an image of an itinerary activity (targetId is the activity id). */
+  ACTIVITY = 'activity',
   COMMENT = 'comment',
 }
 

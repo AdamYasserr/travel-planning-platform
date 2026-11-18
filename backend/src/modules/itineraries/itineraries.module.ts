@@ -9,6 +9,7 @@ import {
   HotelBooking,
   HotelBookingSchema,
 } from "../hotel-bookings/schemas/hotel-booking.schema";
+import { MediaModule } from "../media/media.module";
 import { ReferenceDataModule } from "../reference-data/reference-data.module";
 import { ItinerariesController } from "./itineraries.controller";
 import { ItineraryItemsController } from "./itinerary-items.controller";
@@ -19,6 +20,7 @@ import { Itinerary, ItinerarySchema } from "./schemas/itinerary.schema";
   imports: [
     FxRatesModule,
     ReferenceDataModule,
+    MediaModule,
     MongooseModule.forFeature([
       { name: Itinerary.name, schema: ItinerarySchema },
       { name: HotelBooking.name, schema: HotelBookingSchema },

@@ -5,6 +5,8 @@ import {
 } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { isValidObjectId, Model, Types } from "mongoose";
+import { MediaService } from "../media/media.service";
+import { MediaTargetType } from "../media/dto/upload-media.dto";
 import { ReferenceValidationService } from "../reference-data/reference-validation.service";
 import { SupportedCurrenciesService } from "../reference-data/supported-currencies.service";
 import { FxRatesService } from "../../integrations/fx-rates/fx-rates.service";
@@ -44,6 +46,7 @@ export class ItinerariesService {
     private readonly fxRates: FxRatesService,
     private readonly references: ReferenceValidationService,
     private readonly currencies: SupportedCurrenciesService,
+    private readonly media: MediaService,
   ) {}
 
   async create(ownerId: string, dto: CreateItineraryDto) {
@@ -133,7 +136,9 @@ export class ItinerariesService {
 
   async remove(ownerId: string, id: string) {
     const itinerary = await this.findOwned(ownerId, id);
+    const activityIds = (itinerary.days as any[]).flatMap((day) => (day.activities ?? []).map((a: any) => a._id));
     await itinerary.deleteOne();
+    await this.removeActivityImages(activityIds);
     return { id, deleted: true };
   }
 
@@ -271,12 +276,14 @@ export class ItinerariesService {
 
   async removeDay(ownerId: string, id: string, dayId: string) {
     const { itinerary, index } = await this.findDay(ownerId, id, dayId);
+    const removedActivityIds = ((itinerary.days[index] as any).activities ?? []).map((a: any) => a._id);
     itinerary.days.splice(index, 1);
     itinerary.days.forEach((day, i) => (day.dayNumber = i + 1));
     itinerary.transportCosts = itinerary.transportCosts.filter(
       (cost) => String(cost.dayId) !== dayId,
     ) as any;
     await itinerary.save();
+    await this.removeActivityImages(removedActivityIds);
     return this.present(itinerary, itinerary.displayCurrency);
   }
 
@@ -343,9 +350,34 @@ export class ItinerariesService {
       (item) => String(item._id) === activityId,
     );
     if (index < 0) throw new NotFoundException("Activity not found");
+    const removed: any = (day.activities as any[])[index];
     day.activities.splice(index, 1);
     await itinerary.save();
+    await this.removeActivityImages([removed._id]);
     return this.present(itinerary, itinerary.displayCurrency);
+  }
+
+  /** ITN-12: POST /activities/:id/images. The owner only; an unknown or someone else's activity is a 404. */
+  addActivityImage(
+    ownerId: string,
+    activityId: string,
+    file: { originalname: string; mimetype: string; size: number; buffer: Buffer } | undefined,
+  ) {
+    return this.media.upload(ownerId, { targetType: MediaTargetType.ACTIVITY, targetId: activityId }, file);
+  }
+
+  /** ITN-12: DELETE /activities/:id/images/:imageId. */
+  removeActivityImage(ownerId: string, activityId: string, imageId: string) {
+    return this.media.removeActivityImage(ownerId, activityId, imageId);
+  }
+
+  /** Best effort: a failure here must never undo the itinerary change that was already saved. */
+  private async removeActivityImages(activityIds: unknown[]) {
+    try {
+      await this.media.deleteActivityMedia(activityIds as Types.ObjectId[]);
+    } catch {
+      /* orphaned files are harmless; they are never served without their activity */
+    }
   }
 
   async addBudgetEntry(
@@ -575,6 +607,11 @@ export class ItinerariesService {
         ...day,
         // ITN-05: derived, never stored (startDate + dayNumber - 1).
         date: dayDate(itinerary.startDate, day.dayNumber),
+        // ITN-12: an activity's images (owner view: private owner-only URLs; the public view uses public URLs).
+        activities: (day.activities ?? []).map(({ mediaIds, ...activity }: any) => ({
+          ...activity,
+          images: (mediaIds ?? []).map((id: any) => ({ id: String(id), url: `/api/media/${String(id)}/content` })),
+        })),
         budgets: await Promise.all(
           (day.budgets ?? []).map(async (entry: any) => {
             const converted = await convertAmount(Number(entry.amount), entry.currency);

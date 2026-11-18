@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -11,9 +10,7 @@ import {
   Req,
   UploadedFile,
   UseGuards,
-  UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBody,
   ApiConsumes,
@@ -25,6 +22,7 @@ import type { Request } from 'express';
 import { PageQueryDto } from '../../common/pagination/pagination';
 import { Public } from '../../common/decorators/public.decorator';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
+import { ImageUpload } from '../media/media.limits';
 import { MediaService } from '../media/media.service';
 import { MediaTargetType } from '../media/dto/upload-media.dto';
 import {
@@ -138,24 +136,7 @@ export class BlogController {
       properties: { file: { type: 'string', format: 'binary' } },
     },
   })
-  @UseInterceptors(
-    FileInterceptor('file', {
-      limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-      fileFilter: (_req, file, callback) => {
-        const valid =
-          /\.(jpe?g|png)$/i.test(file.originalname) &&
-          /^image\/(jpeg|png)$/i.test(file.mimetype);
-        callback(
-          valid
-            ? null
-            : new BadRequestException(
-                'Only JPG and PNG image files are supported',
-              ),
-          valid,
-        );
-      },
-    }),
-  )
+  @ImageUpload()
   uploadImage(
     @Param('id') id: string,
     @Req() req: RequiredUserRequest,

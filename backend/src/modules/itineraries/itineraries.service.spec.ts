@@ -85,6 +85,7 @@ describe("ItinerariesService", () => {
       fx as never,
       references as never,
       currencies as never,
+      { deleteActivityMedia: jest.fn(async () => undefined) } as never,
     );
   });
 

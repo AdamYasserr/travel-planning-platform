@@ -1,5 +1,6 @@
-import { Body, Controller, Delete, Param, Patch, Req } from "@nestjs/common";
-import { ApiCookieAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import { Body, Controller, Delete, Param, Patch, Post, Req, UploadedFile } from "@nestjs/common";
+import { ApiBody, ApiConsumes, ApiCookieAuth, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { ImageUpload } from "../media/media.limits";
 import type { Request } from "express";
 import {
   UpdateBudgetEntryDto,
@@ -84,5 +85,32 @@ export class ItineraryItemsController {
   })
   removeTransportCost(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
     return this.itineraries.removeTransportCostById(req.user.userId, id);
+  }
+
+  @Post("activities/:id/images")
+  @ImageUpload()
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({ schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" } } } })
+  @ApiOperation({
+    summary: "Add an image to an activity",
+    description:
+      "ITN-12. JPG or PNG, up to 5 MB, at most 5 images per activity. Only the itinerary's owner; an unknown activity or someone else's is 404.",
+  })
+  @ApiResponse({ status: 201, description: "Image stored; `media.url` serves it to the owner." })
+  @ApiResponse({ status: 400, description: "Wrong type, corrupt or over 5 MB." })
+  @ApiResponse({ status: 404, description: "Activity not found." })
+  @ApiResponse({ status: 409, description: "The activity already has 5 images." })
+  uploadImage(
+    @Param("id") id: string,
+    @Req() req: AuthenticatedRequest,
+    @UploadedFile() file?: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+  ) {
+    return this.itineraries.addActivityImage(req.user.userId, id, file);
+  }
+
+  @Delete("activities/:id/images/:imageId")
+  @ApiOperation({ summary: "Remove an image of an activity (owner only; otherwise 404)" })
+  removeImage(@Param("id") id: string, @Param("imageId") imageId: string, @Req() req: AuthenticatedRequest) {
+    return this.itineraries.removeActivityImage(req.user.userId, id, imageId);
   }
 }

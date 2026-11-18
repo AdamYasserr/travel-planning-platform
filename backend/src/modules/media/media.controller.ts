@@ -1,6 +1,5 @@
 
 import {
-  BadRequestException,
   Controller,
   Body,
   Delete,
@@ -10,9 +9,7 @@ import {
   Req,
   Res,
   UploadedFile,
-  UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBody,
   ApiConsumes,
@@ -26,6 +23,7 @@ import type { Request, Response } from 'express';
 
 import { Public } from '../../common/decorators/public.decorator';
 import { UploadMediaDto } from './dto/upload-media.dto';
+import { ImageUpload } from './media.limits';
 import { MediaService } from './media.service';
 
 interface AuthenticatedRequest extends Request {
@@ -50,11 +48,11 @@ export class MediaController {
         file: { type: 'string', format: 'binary' },
         targetType: {
           type: 'string',
-          enum: ['profile', 'hotel', 'airline', 'post', 'comment'],
+          enum: ['profile', 'hotel', 'airline', 'post', 'comment', 'activity'],
         },
         targetId: {
           type: 'string',
-            description: 'Required for hotel, airline, post, and comment uploads.',
+            description: 'Required for hotel, airline, post, comment, and activity uploads.',
         },
       },
     },
@@ -69,30 +67,7 @@ export class MediaController {
     status: 403,
     description: 'The user is not authorized to upload to this target.',
   })
-  @UseInterceptors(
-    FileInterceptor('file', {
-      limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-      fileFilter: (_request, file, callback) => {
-        const allowedExtensions = /\.(jpe?g|png)$/i;
-        const allowedMimeTypes = /^image\/(jpeg|png)$/i;
-
-        if (
-          !allowedExtensions.test(file.originalname) ||
-          !allowedMimeTypes.test(file.mimetype)
-        ) {
-          callback(
-            new BadRequestException(
-              'Only JPG and PNG image files are supported',
-            ),
-            false,
-          );
-          return;
-        }
-
-        callback(null, true);
-      },
-    }),
-  )
+  @ImageUpload()
   upload(
     @Req() request: AuthenticatedRequest,
     @UploadedFile()

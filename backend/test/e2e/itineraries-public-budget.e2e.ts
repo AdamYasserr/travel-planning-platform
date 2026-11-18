@@ -1,5 +1,7 @@
+import sharp from 'sharp';
+
 import { startApp, type E2EContext } from './helpers/app';
-import { createUser, day, type TestUser } from './helpers/factories';
+import { createUser, day, idOf, type TestUser } from './helpers/factories';
 import { seedReference } from './helpers/reference';
 
 /**
@@ -33,6 +35,132 @@ describe('itineraries: days, budget, images, public view, clone and context sear
     return ids;
   }
   const view = async (user: TestUser, id: string) => (await user.agent.get(`/api/itineraries/${id}`)).body;
+
+  describe('activity images and upload limits (ITN-12, GEN-08)', () => {
+    const png = () => sharp({ create: { width: 4, height: 4, channels: 3, background: '#cc3300' } }).png().toBuffer();
+    const jpg = () => sharp({ create: { width: 4, height: 4, channels: 3, background: '#0033cc' } }).jpeg().toBuffer();
+
+    async function activity(user: TestUser) {
+      const id = await newItinerary(user);
+      const [dayId] = await addDays(user, id, ['cairo']);
+      const res = await user.agent.post(`/api/itineraries/${id}/days/${dayId}/activities`).send({ name: 'Pyramids', description: 'Visit' });
+      const a = res.body.days[0].activities[0];
+      return { itineraryId: id, dayId, activityId: String(a._id) };
+    }
+    const upload = (user: TestUser, activityId: string, buffer: Buffer, filename = 'photo.png', contentType = 'image/png') =>
+      user.agent.post(`/api/activities/${activityId}/images`).attach('file', buffer, { filename, contentType });
+
+    it('stores a PNG and a JPG; the owner sees them on the activity and can fetch the content', async () => {
+      const user = await createUser(ctx);
+      const a = await activity(user);
+      const first = await upload(user, a.activityId, await png());
+      expect(first.status).toBe(201);
+      expect(first.body.media).toMatchObject({ targetType: 'activity', targetId: a.activityId, mimeType: 'image/png' });
+      expect((await upload(user, a.activityId, await jpg(), 'photo.jpg', 'image/jpeg')).status).toBe(201);
+
+      const images = (await view(user, a.itineraryId)).days[0].activities[0].images;
+      expect(images).toEqual([{ id: first.body.media.id, url: `/api/media/${first.body.media.id}/content` }, expect.objectContaining({ id: expect.any(String) })]);
+      const content = await user.agent.get(images[0].url);
+      expect(content.status).toBe(200);
+      expect(content.headers['content-type']).toMatch(/image\/png/);
+      expect((await ctx.http().get(images[0].url)).status).toBe(401);
+      expect((await ctx.http().get(`/api/media/public/${images[0].id}/content`)).status).toBe(404);
+    });
+
+    it('400 for a wrong type, a fake image, a corrupt file, a missing file and a file over 5 MB', async () => {
+      const user = await createUser(ctx);
+      const a = await activity(user);
+      const text = await upload(user, a.activityId, Buffer.from('hello'), 'note.txt', 'text/plain');
+      expect(text.status).toBe(400);
+      const gif = await upload(user, a.activityId, await sharp({ create: { width: 2, height: 2, channels: 3, background: '#fff' } }).gif().toBuffer(), 'a.gif', 'image/gif');
+      expect(gif.status).toBe(400);
+      // Extension and MIME type say PNG, the bytes do not: checked by content, not by name.
+      const fake = await upload(user, a.activityId, Buffer.from('<html><script>alert(1)</script></html>'), 'photo.png', 'image/png');
+      expect(fake.status).toBe(400);
+      const mismatch = await upload(user, a.activityId, await jpg(), 'photo.png', 'image/png');
+      expect(mismatch.status).toBe(400);
+      const corrupt = await upload(user, a.activityId, (await png()).subarray(0, 40), 'photo.png', 'image/png');
+      expect(corrupt.status).toBe(400);
+      const missing = await user.agent.post(`/api/activities/${a.activityId}/images`);
+      expect(missing.status).toBe(400);
+      const huge = Buffer.concat([await png(), Buffer.alloc(5 * 1024 * 1024)]);
+      const big = await upload(user, a.activityId, huge);
+      expect(big.status).toBe(400);
+      expect(big.body.message).toMatch(/5 MB/);
+      expect((await view(user, a.itineraryId)).days[0].activities[0].images).toEqual([]);
+    });
+
+    it('at most 5 images per activity: the 6th is 409, even with parallel uploads', async () => {
+      const user = await createUser(ctx);
+      const a = await activity(user);
+      for (let i = 0; i < 5; i++) expect((await upload(user, a.activityId, await png())).status).toBe(201);
+      const sixth = await upload(user, a.activityId, await png());
+      expect(sixth.status).toBe(409);
+      expect(await model('Media').countDocuments({ targetId: a.activityId })).toBe(5);
+
+      const b = await activity(user);
+      const results = await Promise.all(Array.from({ length: 8 }, async () => upload(user, b.activityId, await png())));
+      expect(results.filter((r) => r.status === 201)).toHaveLength(5);
+      expect(results.filter((r) => r.status === 409)).toHaveLength(3);
+      expect((await view(user, b.itineraryId)).days[0].activities[0].images).toHaveLength(5);
+      expect(await model('Media').countDocuments({ targetId: b.activityId })).toBe(5);
+    });
+
+    it('only the owner: another user, an unknown activity and a signed-out caller never reach the activity', async () => {
+      const owner = await createUser(ctx);
+      const other = await createUser(ctx);
+      const a = await activity(owner);
+      const image = await upload(owner, a.activityId, await png());
+
+      expect((await upload(other, a.activityId, await png())).status).toBe(404);
+      expect((await upload(owner, '507f1f77bcf86cd799439011', await png())).status).toBe(404);
+      expect((await upload(owner, 'not-an-id', await png())).status).toBe(400);
+      expect((await ctx.http().post(`/api/activities/${a.activityId}/images`).attach('file', await png(), { filename: 'a.png', contentType: 'image/png' })).status).toBe(401);
+
+      const url = `/api/activities/${a.activityId}/images/${image.body.media.id}`;
+      expect((await other.agent.delete(url)).status).toBe(404);
+      expect((await ctx.http().delete(url)).status).toBe(401);
+      expect((await other.agent.get(`/api/media/${image.body.media.id}/content`)).status).toBe(404);
+      expect(await model('Media').countDocuments({ targetId: a.activityId })).toBe(1);
+    });
+
+    it('DELETE removes the file, the link and the record; deleting the activity, day or itinerary removes its images', async () => {
+      const user = await createUser(ctx);
+      const a = await activity(user);
+      const one = await upload(user, a.activityId, await png());
+      const two = await upload(user, a.activityId, await png());
+      const del = await user.agent.delete(`/api/activities/${a.activityId}/images/${one.body.media.id}`);
+      expect(del.status).toBe(200);
+      expect((await user.agent.get(`/api/media/${one.body.media.id}/content`)).status).toBe(404);
+      expect((await user.agent.delete(`/api/activities/${a.activityId}/images/${one.body.media.id}`)).status).toBe(404);
+      expect((await view(user, a.itineraryId)).days[0].activities[0].images.map((i: any) => i.id)).toEqual([two.body.media.id]);
+
+      expect((await user.agent.delete(`/api/activities/${a.activityId}`)).status).toBe(200);
+      expect(await model('Media').countDocuments({ targetId: a.activityId })).toBe(0);
+      expect((await user.agent.get(`/api/media/${two.body.media.id}/content`)).status).toBe(404);
+
+      const b = await activity(user);
+      await upload(user, b.activityId, await png());
+      expect((await user.agent.delete(`/api/itineraries/${b.itineraryId}`)).status).toBe(200);
+      expect(await model('Media').countDocuments({ targetId: b.activityId })).toBe(0);
+    });
+
+    it('the same limits on the other upload routes: POST /media and POST /posts/:id/images answer 400 for a file over 5 MB', async () => {
+      const user = await createUser(ctx);
+      const huge = Buffer.concat([await png(), Buffer.alloc(5 * 1024 * 1024)]);
+      const profile = await user.agent.post('/api/media').field('targetType', 'profile').attach('file', huge, { filename: 'a.png', contentType: 'image/png' });
+      expect(profile.status).toBe(400);
+      expect(profile.body.message).toMatch(/5 MB/);
+      const text = await user.agent.post('/api/media').field('targetType', 'profile').attach('file', Buffer.from('x'), { filename: 'a.txt', contentType: 'text/plain' });
+      expect(text.status).toBe(400);
+      const post = await user.agent.post('/api/posts').send({ title: 'Trip', body: 'A post about a trip' });
+      expect(post.status).toBe(201);
+      const postId = idOf(post.body.post ?? post.body);
+      const big = await user.agent.post(`/api/posts/${postId}/images`).attach('file', huge, { filename: 'a.png', contentType: 'image/png' });
+      expect(big.status).toBe(400);
+      expect(big.body.message).toMatch(/5 MB/);
+    });
+  });
 
   describe('budget summary: breakdown, grand total and exchange rates (ITN-14, ITN-18)', () => {
     async function budgetedItinerary(user: TestUser, displayCurrency?: string) {

@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { getConnectionToken } from '@nestjs/mongoose';
@@ -44,6 +48,8 @@ export interface StartOptions {
 export async function startApp(options: StartOptions = {}): Promise<E2EContext> {
   const replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   const uri = replSet.getUri('e2e');
+  // Uploaded files go to a temporary directory, never into the project's uploads folder.
+  const mediaDir = mkdtempSync(join(tmpdir(), 'e2e-media-'));
   Object.assign(process.env, {
     NODE_ENV: options.nodeEnv ?? 'test',
     MONGODB_URI: uri,
@@ -57,6 +63,7 @@ export async function startApp(options: StartOptions = {}): Promise<E2EContext> 
     // PAY-04: the e2e fixtures price rooms and cabins in EGP.
     PLATFORM_CURRENCY: 'EGP',
     FXRATES_API_KEY: '',
+    MEDIA_STORAGE_PATH: mediaDir,
   });
 
   const { AppModule } = await import('../../../src/app.module');
@@ -101,6 +108,7 @@ export async function startApp(options: StartOptions = {}): Promise<E2EContext> 
     async close() {
       await app.close();
       await replSet.stop();
+      rmSync(mediaDir, { recursive: true, force: true });
     },
   };
 }

@@ -64,7 +64,7 @@ describe("ItinerariesService id-only aliases", () => {
     const references = { assertCityIds: jest.fn(async (ids: string[]) => ids), assertCountryCodes: jest.fn(async (c: string[]) => c) };
     const currencies = { assertSupported: jest.fn(async (c: string) => c.toUpperCase()) };
     const empty = { find: jest.fn(async () => []) };
-    const service = new ItinerariesService(itineraries as never, empty as never, empty as never, fx as never, references as never, currencies as never);
+    const service = new ItinerariesService(itineraries as never, empty as never, empty as never, fx as never, references as never, currencies as never, { deleteActivityMedia: jest.fn(async () => undefined) } as never);
     return { service, doc };
   }
   const own = owner.toString();

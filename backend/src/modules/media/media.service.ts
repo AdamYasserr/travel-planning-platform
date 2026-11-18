@@ -25,6 +25,15 @@ import { CommentStatus, PostStatus } from '../blog/enums/post-status.enum';
 import { MediaTargetType, UploadMediaDto } from './dto/upload-media.dto';
 import { Media, MediaDocument } from './schemas/media.schema';
 import { LocalMediaStorage } from './media.storage';
+import {
+  IMAGE_SIZE_MESSAGE,
+  MAX_ACTIVITY_IMAGES,
+  MAX_HOTEL_PHOTOS,
+  MAX_IMAGE_BYTES,
+  MAX_POST_IMAGES,
+} from './media.limits';
+import { Itinerary } from '../itineraries/schemas/itinerary.schema';
+import { ItineraryVisibility } from '../itineraries/enums/itinerary-visibility.enum';
 
 interface UploadedMediaFile {
   originalname: string;
@@ -54,9 +63,7 @@ const ALLOWED_MEDIA: Record<
   },
 };
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
-const MAX_HOTEL_PHOTOS = 5;
-const MAX_POST_IMAGES = 5;
+const MAX_FILE_SIZE = MAX_IMAGE_BYTES;
 const SUPPORTED_FORMATS = new Set(['jpeg', 'png']);
 
 function isJpeg(buffer: Buffer): boolean {
@@ -112,6 +119,8 @@ export class MediaService {
     @InjectModel(Comment.name)
     private readonly commentModel: Model<Comment>,
     private readonly storage: LocalMediaStorage,
+    @InjectModel(Itinerary.name)
+    private readonly itineraryModel: Model<Itinerary>,
   ) {}
 
   async upload(
@@ -167,9 +176,7 @@ export class MediaService {
       file.buffer.length < 1 ||
       file.buffer.length !== file.size
     ) {
-      throw new BadRequestException(
-        'Media file must be between 1 byte and 5 MB',
-      );
+      throw new BadRequestException(IMAGE_SIZE_MESSAGE);
     }
 
     const extension = extname(file.originalname).toLowerCase();
@@ -186,6 +193,7 @@ export class MediaService {
     }
 
     await this.validateImage(file.buffer, mediaType.mimeType);
+    if (dto.targetType === MediaTargetType.ACTIVITY) await this.assertActivityHasRoom(dto.targetId!);
 
     const storageKey = `${randomUUID()}${extension}`;
     await this.storage.save(storageKey, file.buffer);
@@ -288,6 +296,24 @@ export class MediaService {
           throw new ConflictException('Post not found or already has the maximum of 5 images');
         }
         targetIsPublic = updatedPost.status === PostStatus.PUBLISHED;
+      }
+
+      if (dto.targetType === MediaTargetType.ACTIVITY) {
+        // The cap is part of the update filter, so two uploads at once can never reach a 6th image.
+        const activityId = new Types.ObjectId(dto.targetId);
+        const pushed = await this.itineraryModel
+          .updateOne(
+            {
+              ownerId: new Types.ObjectId(ownerId),
+              days: { $elemMatch: { activities: { $elemMatch: { _id: activityId, [`mediaIds.${MAX_ACTIVITY_IMAGES - 1}`]: { $exists: false } } } } },
+            },
+            { $push: { 'days.$[d].activities.$[a].mediaIds': createdMedia._id } },
+            { arrayFilters: [{ 'd.activities._id': activityId }, { 'a._id': activityId }] },
+          )
+          .exec();
+        if (pushed.modifiedCount !== 1) {
+          throw new ConflictException(`Activity not found or already has the maximum of ${MAX_ACTIVITY_IMAGES} images`);
+        }
       }
 
       if (dto.targetType === MediaTargetType.COMMENT) {
@@ -457,6 +483,13 @@ export class MediaService {
       return;
     }
 
+    if (targetType === MediaTargetType.ACTIVITY) {
+      // ITN-12: only the itinerary's owner. Another user's activity is a 404, like every itinerary route.
+      const owned = await this.itineraryModel.exists({ ownerId: owner._id, 'days.activities._id': targetObjectId });
+      if (!owned) throw new NotFoundException('Activity not found');
+      return;
+    }
+
     throw new BadRequestException('Unsupported media target type');
   }
 
@@ -555,7 +588,7 @@ export class MediaService {
       .findOne({
         _id: mediaId,
         ownerId: new Types.ObjectId(ownerId),
-        targetType: { $in: [MediaTargetType.PROFILE, MediaTargetType.POST, MediaTargetType.COMMENT] },
+        targetType: { $in: [MediaTargetType.PROFILE, MediaTargetType.POST, MediaTargetType.COMMENT, MediaTargetType.ACTIVITY] },
       })
       .select('+storageKey')
       .exec();
@@ -587,7 +620,7 @@ export class MediaService {
       .findOne({
         _id: mediaId,
         targetType: {
-          $in: [MediaTargetType.HOTEL, MediaTargetType.AIRLINE, MediaTargetType.POST, MediaTargetType.COMMENT],
+          $in: [MediaTargetType.HOTEL, MediaTargetType.AIRLINE, MediaTargetType.POST, MediaTargetType.COMMENT, MediaTargetType.ACTIVITY],
         },
       })
       .select('+storageKey')
@@ -600,6 +633,11 @@ export class MediaService {
     if (media.targetType === MediaTargetType.POST) {
       const post = await this.postModel.findOne({ _id: media.targetId, status: PostStatus.PUBLISHED }).select('_id').exec();
       if (!post) throw new NotFoundException('Media not found');
+    }
+    if (media.targetType === MediaTargetType.ACTIVITY) {
+      // ITN-12: an activity image is public only while its itinerary is public (hidden or made private: 404).
+      const visible = await this.itineraryModel.exists({ visibility: ItineraryVisibility.PUBLIC, 'days.activities._id': media.targetId });
+      if (!visible) throw new NotFoundException('Media not found');
     }
     if (media.targetType === MediaTargetType.COMMENT) {
       const comment = await this.commentModel.findOne({ _id: media.targetId, status: CommentStatus.VISIBLE }).select('postId').exec();
@@ -684,6 +722,67 @@ export class MediaService {
     for (const media of mediaRows) {
       await this.removeTargetMedia(ownerId, targetType, targetId, media._id.toString(), moderation);
     }
+  }
+
+  /** 409 when the activity already has the maximum number of images (the update filter re-checks atomically). */
+  private async assertActivityHasRoom(activityId: string) {
+    const count = await this.mediaModel
+      .countDocuments({ targetType: MediaTargetType.ACTIVITY, targetId: new Types.ObjectId(activityId) })
+      .exec();
+    if (count >= MAX_ACTIVITY_IMAGES) {
+      throw new ConflictException(`An activity can have at most ${MAX_ACTIVITY_IMAGES} images`);
+    }
+  }
+
+  /**
+   * ITN-12: removes one image of an activity (file, link and metadata). Only the itinerary's owner;
+   * an unknown activity or image, or someone else's, is a 404.
+   */
+  async removeActivityImage(ownerId: string, activityId: string, mediaId: string) {
+    if (!Types.ObjectId.isValid(activityId) || !Types.ObjectId.isValid(mediaId)) {
+      throw new BadRequestException('Invalid media target');
+    }
+    if (!Types.ObjectId.isValid(ownerId)) throw new UnauthorizedException('Invalid authenticated user');
+    const owner = await this.userModel
+      .findOne({ _id: ownerId, isActive: true, isSuspended: false, deactivatedAt: null })
+      .exec();
+    if (!owner) throw new UnauthorizedException('Account is unavailable');
+    await this.checkTargetPermission(owner, MediaTargetType.ACTIVITY, activityId);
+
+    const media = await this.mediaModel
+      .findOne({ _id: mediaId, targetType: MediaTargetType.ACTIVITY, targetId: new Types.ObjectId(activityId) })
+      .select('+storageKey')
+      .exec();
+    if (!media) throw new NotFoundException('Media not found');
+
+    const id = new Types.ObjectId(activityId);
+    await this.itineraryModel
+      .updateOne(
+        { ownerId: owner._id, 'days.activities._id': id },
+        { $pull: { 'days.$[d].activities.$[a].mediaIds': media._id } },
+        { arrayFilters: [{ 'd.activities._id': id }, { 'a._id': id }] },
+      )
+      .exec();
+    await this.storage.remove(media.storageKey);
+    await this.mediaModel.deleteOne({ _id: media._id }).exec();
+    return { mediaId, removed: true };
+  }
+
+  /** Best effort: deletes the images of activities that were removed (with their day or itinerary). */
+  async deleteActivityMedia(activityIds: Types.ObjectId[]) {
+    if (!activityIds.length) return;
+    const rows = await this.mediaModel
+      .find({ targetType: MediaTargetType.ACTIVITY, targetId: { $in: activityIds } })
+      .select('+storageKey')
+      .exec();
+    for (const media of rows) {
+      try {
+        await this.storage.remove(media.storageKey);
+      } catch {
+        this.logger.warn('Activity image file could not be removed');
+      }
+    }
+    await this.mediaModel.deleteMany({ _id: { $in: rows.map((media) => media._id) } }).exec();
   }
 
   private sanitizeFilename(
