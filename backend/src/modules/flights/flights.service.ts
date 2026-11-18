@@ -320,29 +320,18 @@ return this.toLocalFlightResponse(flight);
    * Bookings keep copies of their flights' times (completion job, "no cancel after departure", the refund
    * tier, grouped lists). When a flight is rescheduled, the copies on every booking that is not final yet
    * (Pending Payment or Confirmed) follow, inside the caller's transaction:
-   *  - this flight as the outbound: departureTime and arrivalTime, and lastDepartureTime when one-way;
-   *  - this flight as the return of a round trip: returnSegment's times and lastDepartureTime.
+   *  - this flight as the outbound: departureTime and arrivalTime;
+   *  - this flight as the return of a round trip: returnSegment's departureTime and arrivalTime.
    */
   private async syncBookingTimes(flightId: Types.ObjectId, departureTime: Date, arrivalTime: Date, session: ClientSession) {
     const live = { $in: [FlightBookingStatus.PENDING_PAYMENT, FlightBookingStatus.CONFIRMED] };
     await this.flightBookingModel
-      .updateMany(
-        { flightId, status: live, returnSegment: null } as never,
-        { $set: { departureTime, arrivalTime, lastDepartureTime: departureTime } },
-        { session },
-      )
-      .exec();
-    await this.flightBookingModel
-      .updateMany(
-        { flightId, status: live, returnSegment: { $ne: null } } as never,
-        { $set: { departureTime, arrivalTime } },
-        { session },
-      )
+      .updateMany({ flightId, status: live } as never, { $set: { departureTime, arrivalTime } }, { session })
       .exec();
     await this.flightBookingModel
       .updateMany(
         { 'returnSegment.flightId': flightId, status: live } as never,
-        { $set: { 'returnSegment.departureTime': departureTime, 'returnSegment.arrivalTime': arrivalTime, lastDepartureTime: departureTime } },
+        { $set: { 'returnSegment.departureTime': departureTime, 'returnSegment.arrivalTime': arrivalTime } },
         { session },
       )
       .exec();

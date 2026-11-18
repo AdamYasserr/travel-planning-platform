@@ -197,13 +197,6 @@ export class FlightBooking {
   @Prop({ type: Date, default: undefined })
   arrivalTime?: Date;
 
-  /**
-   * Departure of the LAST flight: the return on a round trip, else the outbound. The booking is Completed
-   * after it. Missing on older bookings, which are one-way: departureTime is used instead.
-   */
-  @Prop({ type: Date, default: undefined })
-  lastDepartureTime?: Date;
-
   @Prop({ type: ReturnSegmentSchema, default: undefined })
   returnSegment?: ReturnSegment | null;
 

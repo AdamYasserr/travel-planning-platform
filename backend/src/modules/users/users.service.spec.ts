@@ -89,7 +89,7 @@ describe('UsersService', () => {
       expect(hotelFilter).toEqual({ userId: id, status: HotelBookingStatus.CONFIRMED, checkOutDate: { $gt: expect.any(Date) } });
       // FLT-12: upcoming until the LAST flight departs (older one-way bookings: their only departure).
       const later = { $gt: expect.any(Date) };
-      expect(flightFilter).toEqual({ userId: id, status: FlightBookingStatus.CONFIRMED, $or: [{ lastDepartureTime: later }, { lastDepartureTime: null, departureTime: later }] });
+      expect(flightFilter).toEqual({ userId: id, status: FlightBookingStatus.CONFIRMED, $or: [{ 'returnSegment.departureTime': later }, { returnSegment: null, departureTime: later }] });
     });
 
     it('deactivates, revokes the session, hides posts and makes public itineraries private', async () => {

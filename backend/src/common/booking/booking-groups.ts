@@ -7,11 +7,11 @@ export type BookingGroup = (typeof BOOKING_GROUPS)[number];
 const DAY_MS = 86_400_000;
 
 /**
- * FLT-12: compares the departure of a flight booking's LAST flight (the return of a round trip).
- * Bookings made before round trips have no lastDepartureTime; their (only) departure is used.
+ * FLT-12: compares the departure of a flight booking's LAST flight: the return of a round trip, else its
+ * only (outbound) departure. Bookings made before round trips have no returnSegment, so they are one-way.
  */
 export function lastDepartureFilter(condition: Record<string, Date>): Record<string, unknown> {
-  return { $or: [{ lastDepartureTime: condition }, { lastDepartureTime: null, departureTime: condition }] };
+  return { $or: [{ 'returnSegment.departureTime': condition }, { returnSegment: null, departureTime: condition }] };
 }
 
 /**

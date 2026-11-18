@@ -395,7 +395,7 @@ describe('round-trip booking, passengers, extra baggage and rescheduling (FLT-12
       await payments().completeFinishedBookings(new Date());
       expect((await bookingOf(bookingId)).status).toBe('Confirmed');
 
-      const returnDeparture = (await bookingOf(bookingId)).lastDepartureTime as Date;
+      const returnDeparture = (await bookingOf(bookingId)).returnSegment.departureTime as Date;
       await payments().completeFinishedBookings(new Date(returnDeparture.getTime() - 60_000));
       expect((await bookingOf(bookingId)).status).toBe('Confirmed');
       await payments().completeFinishedBookings(new Date(returnDeparture.getTime() + 60_000));
@@ -450,7 +450,6 @@ describe('round-trip booking, passengers, extra baggage and rescheduling (FLT-12
       expect((await patch(t.returnId, { departureTime: later.toISOString(), arrivalTime: new Date(later.getTime() + 4 * 3_600_000).toISOString() })).status).toBe(200);
       const moved = await bookingOf(bookingId);
       expect(moved.returnSegment.departureTime).toEqual(later);
-      expect(moved.lastDepartureTime).toEqual(later);
       expect(moved.departureTime).toEqual(new Date(at(30, '08:00')));
 
       const tooEarly = new Date(at(30, '11:00'));
@@ -464,7 +463,7 @@ describe('round-trip booking, passengers, extra baggage and rescheduling (FLT-12
       expect((await patch(t.outboundId, { departureTime: outboundLater.toISOString(), arrivalTime: new Date(outboundLater.getTime() + 4 * 3_600_000).toISOString() })).status).toBe(200);
       const after = await bookingOf(bookingId);
       expect(after.departureTime).toEqual(outboundLater);
-      expect(after.lastDepartureTime).toEqual(later);
+      expect(after.returnSegment.departureTime).toEqual(later);
     });
   });
 

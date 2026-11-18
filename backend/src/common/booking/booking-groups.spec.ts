@@ -6,7 +6,7 @@ const yesterdayNoon = new Date('2030-06-09T12:00:00.000Z');
 describe('booking groups (FLT-25, HTL-20)', () => {
   // FLT-12: a Confirmed flight booking is finished at its LAST departure (older bookings: their only departure).
   const lastDeparture = (condition: Record<string, Date>) => ({
-    $or: [{ lastDepartureTime: condition }, { lastDepartureTime: null, departureTime: condition }],
+    $or: [{ 'returnSegment.departureTime': condition }, { returnSegment: null, departureTime: condition }],
   });
 
   it('upcoming: Confirmed not finished, or a live hold not finished', () => {

@@ -165,7 +165,6 @@ export class FlightBookingsService {
         departureTime: outbound.flight.departureTime,
         arrivalTime: outbound.flight.arrivalTime,
         tripType: (back ? 'round-trip' : 'one-way') as 'round-trip' | 'one-way',
-        lastDepartureTime: last.flight.departureTime,
         returnSegment: back
           ? {
               flightId: back.segment.flight._id,
