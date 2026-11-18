@@ -290,7 +290,7 @@ describe('holds, expiry and cancellation (HTL-16/18, FLT-22, GEN-11)', () => {
       const { flightId } = await createAirlineWithFlight(ctx, { seats: 4 });
       const user = await createUser(ctx);
       const res = await user.agent.post('/api/flight-bookings/hold').send({
-        flightId, cabinClass: 'Economy', passengers: [{ fullName: 'A B', dateOfBirth: '1990-01-01' }], policiesAccepted: true,
+        flightId, cabinClass: 'Economy', passengers: [{ fullName: 'A B', dateOfBirth: '1990-01-01', passportNumber: 'A1234567', passportExpiry: '2045-01-01', nationality: 'EG' }], policiesAccepted: true,
       });
       expect(res.status).toBe(201);
       expect(res.body.status).toBe('Pending Payment');

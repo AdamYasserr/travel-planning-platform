@@ -146,7 +146,7 @@ describe('route aliases (PDF Section 8) behave exactly like the original routes'
   });
 
   describe('POST /flight-bookings/hold === POST /flight-bookings (creating the booking IS the hold)', () => {
-    const dto = { flightId: '507f1f77bcf86cd799439011', cabinClass: 'Economy', policiesAccepted: true, passengers: [{ fullName: 'A B', dateOfBirth: '1990-01-01' }] };
+    const dto = { flightId: '507f1f77bcf86cd799439011', cabinClass: 'Economy', policiesAccepted: true, passengers: [{ fullName: 'A B', dateOfBirth: '1990-01-01', passportNumber: 'A1234567', passportExpiry: '2045-01-01', nationality: 'EG' }] };
     it('creates through the same service method with the same arguments and status', async () => {
       const r = await expectSame(flightBookings, 'create', ['POST', '/flight-bookings/hold'], ['POST', '/flight-bookings'], user, dto);
       expect(r.status).toBe(201);

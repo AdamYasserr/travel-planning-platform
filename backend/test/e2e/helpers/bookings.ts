@@ -22,7 +22,7 @@ export function holdFlight(user: TestUser, input: { flightId: string; passengers
   return user.agent.post('/api/flight-bookings').send({
     flightId: input.flightId,
     cabinClass: input.cabinClass ?? 'Economy',
-    passengers: Array.from({ length: input.passengers ?? 1 }, (_, i) => ({ fullName: `Passenger ${i + 1}`, dateOfBirth: '1990-01-01' })),
+    passengers: Array.from({ length: input.passengers ?? 1 }, (_, i) => ({ fullName: `Passenger ${i + 1}`, dateOfBirth: '1990-01-01', passportNumber: `P${1000000 + i}`, passportExpiry: '2045-01-01', nationality: 'EG' })),
     policiesAccepted: true,
     ...input.body,
   });

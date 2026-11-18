@@ -17,8 +17,10 @@ import Stripe from 'stripe';
 import { StripeService } from '../../integrations/stripe/stripe.service';
 import { assertBookingTransition } from '../../common/booking/booking-status';
 import { runBookingTransaction } from '../../common/booking/booking-transaction';
+import { currencyExponent } from '../../common/currency/money';
 import {
   FlightBooking,
+  seatsHeld,
 } from '../flight-bookings/schemas/flight-booking.schema';
 import { FlightBookingStatus } from '../flight-bookings/enums/flight-booking-status.enum';
 import { CabinInventory } from '../flights/schemas/cabin-inventory.schema';
@@ -1078,7 +1080,7 @@ export class PaymentsService {
       await this.inventoryModel
         .updateOne(
           { _id: expired.cabinInventoryId },
-          { $inc: { availableSeats: expired.passengers.length } },
+          { $inc: { availableSeats: seatsHeld(expired) } },
           { session },
         )
         .exec();
@@ -1093,7 +1095,7 @@ export class PaymentsService {
     await this.inventoryModel
       .updateOne(
         { _id: booking.cabinInventoryId },
-        { $inc: { availableSeats: booking.passengers.length } },
+        { $inc: { availableSeats: seatsHeld(booking) } },
         { session },
       )
       .exec();
@@ -1270,13 +1272,7 @@ export class PaymentsService {
   }
 
   private toMinorUnits(amount: number, currency: string) {
-    const zeroDecimalCurrencies = new Set([
-      'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG',
-      'RWF', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
-    ]);
-    const exponent = zeroDecimalCurrencies.has(currency)
-      ? 0
-      : 2;
+    const exponent = currencyExponent(currency);
     const multiplier = 10 ** exponent;
     const amountMinor = Math.round(amount * multiplier);
     const isWholeUnitCurrency = currency === 'ISK' || currency === 'UGX';

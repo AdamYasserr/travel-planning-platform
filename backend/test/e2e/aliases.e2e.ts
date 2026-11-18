@@ -231,7 +231,7 @@ describe('PDF route aliases return the same as the original routes (Section 8)',
     it('POST /flight-bookings/hold returns the same as POST /flight-bookings', async () => {
       const { flightId } = await createAirlineWithFlight(ctx, { seats: 4 });
       const [u1, u2] = [await createUser(ctx), await createUser(ctx)];
-      const body = { flightId, cabinClass: 'Economy', passengers: [{ fullName: 'A B', dateOfBirth: '1990-01-01' }], policiesAccepted: true };
+      const body = { flightId, cabinClass: 'Economy', passengers: [{ fullName: 'A B', dateOfBirth: '1990-01-01', passportNumber: 'A1234567', passportExpiry: '2045-01-01', nationality: 'EG' }], policiesAccepted: true };
       const alias = await u1.agent.post('/api/flight-bookings/hold').send(body);
       const original = await u2.agent.post('/api/flight-bookings').send(body);
       expect(alias.status).toBe(201);

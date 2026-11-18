@@ -173,15 +173,15 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       const familyHold = await holdFlight(family, {
         flightId: f.flightId,
         body: { passengers: [
-          { fullName: 'Adult Traveller', dateOfBirth: '1985-03-01' },
-          { fullName: 'Child Traveller', dateOfBirth: yearsBefore(6) },
-          { fullName: 'Infant Traveller', dateOfBirth: yearsBefore(1) },
+          { fullName: 'Adult Traveller', dateOfBirth: '1985-03-01', nationalId: '29001011234', nationality: 'EG' },
+          { fullName: 'Child Traveller', dateOfBirth: yearsBefore(6), nationalId: '29001011234', nationality: 'EG' },
+          { fullName: 'Infant Traveller', dateOfBirth: yearsBefore(1), nationalId: '29001011234', nationality: 'EG' },
         ] },
       });
       await confirmBooking(ctx, family, 'flight', familyHold.body._id);
       const pending = await holdFlight(await createUser(ctx), { flightId: f.flightId });
       const doneUser = await createUser(ctx);
-      const done = await holdFlight(doneUser, { flightId: f.flightId, body: { passengers: [{ fullName: '=HYPERLINK("http://evil","x")', dateOfBirth: '1990-01-01' }, { fullName: 'Doe, "Jo"', dateOfBirth: '1991-01-01' }] } });
+      const done = await holdFlight(doneUser, { flightId: f.flightId, body: { passengers: [{ fullName: '=HYPERLINK("http://evil","x")', dateOfBirth: '1990-01-01', nationalId: '29001011234', nationality: 'EG' }, { fullName: 'Doe, "Jo"', dateOfBirth: '1991-01-01', nationalId: '29001011234', nationality: 'EG' }] } });
       await confirmBooking(ctx, doneUser, 'flight', done.body._id);
       await model('FlightBooking').updateOne({ _id: done.body._id }, { $set: { status: 'Completed' } });
       return { ...f, familyHold, pending, done };
@@ -193,7 +193,8 @@ describe('provider views, reviews, grouped lists and page sizes (FLT-29, HTL-22,
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ page: 1, limit: 10, total: 3, pages: 1 });
       expect(res.body.flight).toMatchObject({ id: f.flightId, status: 'Scheduled' });
-      expect(res.body.cabins).toEqual([{ cabinClass: 'Economy', totalSeats: 10, availableSeats: 4 }]);
+      // The infant takes no seat (FLT-19): 10 - (2 family seats + 1 pending + 2 completed) = 5.
+      expect(res.body.cabins).toEqual([{ cabinClass: 'Economy', totalSeats: 10, availableSeats: 5 }]);
       const family = res.body.items.find((i: any) => i.bookingId === f.familyHold.body._id);
       expect(family).toMatchObject({
         reference: f.familyHold.body.reference,

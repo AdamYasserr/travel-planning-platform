@@ -14,6 +14,13 @@ export class ReferenceValidationService {
     @InjectModel(Airport.name) private readonly airports: Model<Airport>,
   ) {}
 
+  /** The given country codes (any case) that are NOT in the Countries list, upper-cased. */
+  async unknownCountryCodes(codes: string[]): Promise<string[]> {
+    const wanted = unique(codes.map((c) => String(c).trim().toUpperCase()));
+    const found = new Set((await this.countries.find({ code: { $in: wanted } }).select('code').lean().exec()).map((d) => d.code));
+    return wanted.filter((code) => !found.has(code));
+  }
+
   async assertCountryCodes(codes: string[], field = 'countryId'): Promise<string[]> {
     const wanted = unique(codes.map((c) => String(c).trim().toUpperCase()));
     const found = await this.countries.find({ code: { $in: wanted } }).select('code').lean().exec();
