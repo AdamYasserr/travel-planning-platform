@@ -6,8 +6,11 @@ import {
   ForbiddenException,
   ConflictException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { HydratedDocument, Model, Types } from 'mongoose';
+import type { ClientSession, Connection } from 'mongoose';
+
+import { runBookingTransaction } from '../../common/booking/booking-transaction';
 
 import {
   Flight,
@@ -54,6 +57,9 @@ private readonly airportModel: Model<Airport>,
 
     @InjectModel(FlightBooking.name)
     private readonly flightBookingModel: Model<FlightBooking>,
+
+    @InjectConnection()
+    private readonly connection: Connection,
   ) {}
 
   // Check airline management permission
@@ -246,42 +252,49 @@ return this.toLocalFlightResponse(flight);
       );
     }
 
-    const updatedFlight = await this.flightModel
-      .findOneAndUpdate(
-        {
-          _id: flightId,
-          status: FlightStatus.SCHEDULED,
-          departureTime: { $gt: new Date() },
-        },
-        {
-          $set: {
-            ...(dto.flightNumber !== undefined
-              ? { flightNumber: dto.flightNumber }
-              : {}),
-            departureAirport,
-            arrivalAirport,
-            departureTime,
-            arrivalTime,
-          },
-        },
-        {
-          new: true,
-          runValidators: true,
-        },
-      )
-      .exec();
+    const timesChanged =
+      flight.departureTime.getTime() !== departureTime.getTime() ||
+      flight.arrivalTime.getTime() !== arrivalTime.getTime();
 
-    if (!updatedFlight) {
-      throw new ConflictException(
-        'Flight is no longer available for editing',
-      );
-    }
+    // The flight and the departure copies on its bookings change together or not at all.
+    const updatedFlight = await runBookingTransaction(this.connection, async (session) => {
+      const updated = await this.flightModel
+        .findOneAndUpdate(
+          {
+            _id: flightId,
+            status: FlightStatus.SCHEDULED,
+            departureTime: { $gt: new Date() },
+          },
+          {
+            $set: {
+              ...(dto.flightNumber !== undefined
+                ? { flightNumber: dto.flightNumber }
+                : {}),
+              departureAirport,
+              arrivalAirport,
+              departureTime,
+              arrivalTime,
+            },
+          },
+          {
+            new: true,
+            runValidators: true,
+            session,
+          },
+        )
+        .exec();
+
+      if (!updated) {
+        throw new ConflictException(
+          'Flight is no longer available for editing',
+        );
+      }
+      if (timesChanged) await this.syncBookingTimes(updated._id, departureTime, session);
+      return updated;
+    });
 
     // GEN-01: a new departure or arrival time is announced to every Confirmed booking on the flight.
-    if (
-      flight.departureTime.getTime() !== departureTime.getTime() ||
-      flight.arrivalTime.getTime() !== arrivalTime.getTime()
-    ) {
+    if (timesChanged) {
       const affected = await this.flightBookingModel
         .find({ flightId: updatedFlight._id, status: FlightBookingStatus.CONFIRMED })
         .select({ _id: 1, userId: 1 })
@@ -299,6 +312,18 @@ return this.toLocalFlightResponse(flight);
     }
 
    return this.toLocalFlightResponse(updatedFlight);
+  }
+
+  /**
+   * Bookings keep a copy of the departure time (completion job, "no cancel after departure", the
+   * refund tier, grouped lists). When the flight is rescheduled, the copy on every booking that is
+   * not final yet (Pending Payment or Confirmed) follows, inside the caller's transaction.
+   */
+  private async syncBookingTimes(flightId: Types.ObjectId, departureTime: Date, session: ClientSession) {
+    const live = { $in: [FlightBookingStatus.PENDING_PAYMENT, FlightBookingStatus.CONFIRMED] };
+    await this.flightBookingModel
+      .updateMany({ flightId, status: live } as never, { $set: { departureTime } }, { session })
+      .exec();
   }
 
 
