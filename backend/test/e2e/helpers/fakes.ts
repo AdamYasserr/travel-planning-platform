@@ -175,13 +175,17 @@ export class FxFake {
   /** 1 unit of the key currency in USD. Unknown currencies get 1. */
   private readonly usd: Record<string, number> = { USD: 1, EUR: 1.1, EGP: 0.02, GBP: 1.3, AED: 0.27, SAR: 0.27, JPY: 0.0067 };
 
+  /** The date every fake rate "was fetched" (the real service returns the fetch time of its cached rates). */
+  fetchedAt = '2026-01-15T08:00:00.000Z';
+
   async getRate(from: string, to: string) {
     const a = from.toUpperCase(), b = to.toUpperCase();
-    return { from: a, to: b, rate: (this.usd[a] ?? 1) / (this.usd[b] ?? 1), stale: false };
+    if (a === b) return { from: a, to: b, rate: 1, stale: false };
+    return { from: a, to: b, rate: (this.usd[a] ?? 1) / (this.usd[b] ?? 1), stale: false, fetchedAt: this.fetchedAt };
   }
 
   async convert(amount: number, from: string, to: string) {
     const quote = await this.getRate(from, to);
-    return { amount, from: quote.from, to: quote.to, rate: quote.rate, convertedAmount: Number((amount * quote.rate).toFixed(2)), stale: false };
+    return { ...quote, amount, convertedAmount: Number((amount * quote.rate).toFixed(2)) };
   }
 }

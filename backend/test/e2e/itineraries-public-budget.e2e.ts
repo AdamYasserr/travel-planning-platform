@@ -34,6 +34,77 @@ describe('itineraries: days, budget, images, public view, clone and context sear
   }
   const view = async (user: TestUser, id: string) => (await user.agent.get(`/api/itineraries/${id}`)).body;
 
+  describe('budget summary: breakdown, grand total and exchange rates (ITN-14, ITN-18)', () => {
+    async function budgetedItinerary(user: TestUser, displayCurrency?: string) {
+      const id = await newItinerary(user, displayCurrency ? { displayCurrency } : {});
+      const [d1, d2] = await addDays(user, id, ['cairo', 'dubai']);
+      const entry = (dayId: string, category: string, amount: number, currency: string, type: string) =>
+        user.agent.post(`/api/itineraries/${id}/days/${dayId}/budgets`).send({ description: `${category} ${amount}`, category, amount, currency, type });
+      const entries = [
+        await entry(d1, 'food', 100, 'EGP', 'planned'),
+        await entry(d1, 'food', 10, 'EUR', 'actual'),
+        await entry(d1, 'accommodation', 50, 'USD', 'planned'),
+        await entry(d2, 'in_city_transport', 20, 'EUR', 'planned'),
+        await entry(d2, 'activities', 300, 'EGP', 'planned'),
+        await entry(d2, 'activities', 5, 'USD', 'actual'),
+      ];
+      for (const res of entries) expect(res.status).toBe(201);
+      const cost = await user.agent.post(`/api/itineraries/${id}/transport-costs`).send({ mode: 'Flight', fromCityId: 'cairo', toCityId: 'dubai', amount: 40, currency: 'EGP', dayId: d2 });
+      expect(cost.status).toBe(201);
+      return id;
+    }
+
+    it('per-bucket planned and actual totals in the display currency, the grand total, and the rates used', async () => {
+      const user = await createUser(ctx);
+      const id = await budgetedItinerary(user, 'USD');
+      const res = await user.agent.get(`/api/itineraries/${id}/budget-summary`);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ itineraryId: id, currency: 'USD', plannedTotal: 80.8, actualTotal: 16 });
+      expect(res.body.breakdown).toEqual({
+        food: { planned: 2, actual: 11 },
+        accommodation: { planned: 50, actual: 0 },
+        in_city_transport: { planned: 22, actual: 0 },
+        activities: { planned: 6, actual: 5 },
+        intercity_transport: { planned: 0.8, actual: 0 },
+      });
+      expect(res.body.grandTotal).toEqual({ planned: 80.8, actual: 16 });
+      expect(res.body.exchangeRates).toEqual(expect.arrayContaining([
+        { from: 'EGP', to: 'USD', rate: 0.02, fetchedAt: ctx.fx.fetchedAt, stale: false },
+        { from: 'EUR', to: 'USD', rate: 1.1, fetchedAt: ctx.fx.fetchedAt, stale: false },
+      ]));
+      expect(res.body.exchangeRates).toHaveLength(2);
+      expect(res.body.ratesAsOf).toBe(ctx.fx.fetchedAt);
+    });
+
+    it('?currency= overrides the itinerary display currency; the same numbers are in GET /itineraries/:id', async () => {
+      const user = await createUser(ctx);
+      const id = await budgetedItinerary(user, 'USD');
+      const egp = await user.agent.get(`/api/itineraries/${id}/budget-summary?currency=EGP`);
+      expect(egp.status).toBe(200);
+      expect(egp.body).toMatchObject({ currency: 'EGP', plannedTotal: 4040, actualTotal: 800 });
+      expect(egp.body.breakdown.food).toEqual({ planned: 100, actual: 550 });
+      expect(egp.body.breakdown.accommodation).toEqual({ planned: 2500, actual: 0 });
+      expect(egp.body.grandTotal).toEqual({ planned: 4040, actual: 800 });
+      expect(egp.body.exchangeRates.map((r: any) => r.from).sort()).toEqual(['EUR', 'USD']);
+
+      const full = await user.agent.get(`/api/itineraries/${id}?currency=EGP`);
+      expect(full.body.budgetSummary).toEqual({ currency: 'EGP', plannedTotal: 4040, actualTotal: 800, breakdown: egp.body.breakdown, grandTotal: egp.body.grandTotal, exchangeRates: egp.body.exchangeRates, ratesAsOf: egp.body.ratesAsOf });
+      expect((await user.agent.get(`/api/itineraries/${id}/budget-summary?currency=ZZZ`)).status).toBe(400);
+    });
+
+    it('the grand total always equals the sum of the buckets, and nothing converted means no rate date', async () => {
+      const user = await createUser(ctx);
+      const id = await newItinerary(user, { displayCurrency: 'USD' });
+      const [d1] = await addDays(user, id, ['cairo']);
+      await user.agent.post(`/api/itineraries/${id}/days/${d1}/budgets`).send({ description: 'Hotel', category: 'accommodation', amount: 99.99, currency: 'USD', type: 'planned' });
+      const res = await user.agent.get(`/api/itineraries/${id}/budget-summary`);
+      expect(res.body).toMatchObject({ plannedTotal: 99.99, actualTotal: 0, exchangeRates: [], ratesAsOf: null });
+      const sum = (key: 'planned' | 'actual') => Object.values(res.body.breakdown as Record<string, any>).reduce((t, b) => t + b[key], 0);
+      expect(res.body.grandTotal).toEqual({ planned: Number(sum('planned').toFixed(2)), actual: Number(sum('actual').toFixed(2)) });
+      expect((await (await createUser(ctx)).agent.get(`/api/itineraries/${id}/budget-summary`)).status).toBe(404);
+    });
+  });
+
   describe('day dates and city groups (ITN-05, ITN-09)', () => {
     it('a day date is derived from startDate + day order; nothing is stored and a date in the request is rejected', async () => {
       const user = await createUser(ctx);

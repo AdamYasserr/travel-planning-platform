@@ -237,11 +237,14 @@ describe("ItinerariesService", () => {
     });
     itineraryModel.findOne.mockResolvedValue(itinerary as never);
     const result = await service.get(ownerId, itineraryId, "usd");
-    expect(result.budgetSummary).toEqual({
+    expect(result.budgetSummary).toMatchObject({
       currency: "USD",
       plannedTotal: 11,
       actualTotal: 5,
+      grandTotal: { planned: 11, actual: 5 },
     });
+    expect(result.budgetSummary.breakdown.food).toEqual({ planned: 11, actual: 0 });
+    expect(result.budgetSummary.breakdown.in_city_transport).toEqual({ planned: 0, actual: 5 });
     expect(
       result.days[0].budgets.map((entry: any) => entry.displayAmount),
     ).toEqual([11, 5]);

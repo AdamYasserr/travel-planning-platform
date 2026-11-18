@@ -28,7 +28,8 @@ import {
   ReorderItineraryDaysDto,
 } from "./dto/itineraries.dto";
 import { Itinerary } from "./schemas/itinerary.schema";
-import { BudgetEntryType } from "./schemas/budget.schema";
+import { BudgetCategory, BudgetEntryType } from "./schemas/budget.schema";
+import { buildBreakdown, ratesAsOf, type RateUsed } from "./budget-breakdown";
 import { ItineraryVisibility } from "./enums/itinerary-visibility.enum";
 import { cityGroups, dayDate } from "./itinerary-days";
 
@@ -535,34 +536,22 @@ export class ItinerariesService {
   }
 
   private async present(itinerary: any, currency: string) {
-    const entries = (itinerary.days ?? []).flatMap(
-      (day: any) => day.budgets ?? [],
-    );
     const transportCosts = itinerary.transportCosts ?? [];
+    // The rate used for each source currency, so the summary can say which rates (and which date) it relied on.
+    const ratesUsed = new Map<string, RateUsed>();
     const convertAmount = async (amount: number, from: string) => {
       if (from === currency || amount === 0) return amount;
-      return (await this.fxRates.convert(amount, from, currency))
-        .convertedAmount;
-    };
-    const toTotal = async (type: BudgetEntryType) => {
-      const selected = entries.filter((entry: any) => entry.type === type);
-      const converted = await Promise.all(
-        selected.map((entry: any) =>
-          convertAmount(Number(entry.amount), entry.currency),
-        ),
-      );
-      if (type === BudgetEntryType.PLANNED) {
-        converted.push(
-          ...(await Promise.all(
-            transportCosts.map((cost: any) =>
-              convertAmount(Number(cost.amount), cost.currency),
-            ),
-          )),
-        );
+      const quote: any = await this.fxRates.convert(amount, from, currency);
+      if (typeof quote.rate === "number") {
+        ratesUsed.set(from, {
+          from,
+          to: currency,
+          rate: quote.rate,
+          fetchedAt: quote.fetchedAt ?? null,
+          stale: quote.stale === true,
+        });
       }
-      return Number(
-        converted.reduce((sum, amount) => sum + amount, 0).toFixed(2),
-      );
+      return quote.convertedAmount;
     };
     const result = itinerary.toObject();
     const [hotelBookings, flightBookings] = await Promise.all([
@@ -579,23 +568,34 @@ export class ItinerariesService {
           })
         : [],
     ]);
+    // Each amount is converted once; the day views and every total below reuse it.
+    const entryRows: { category: BudgetCategory; type: BudgetEntryType; converted: number }[] = [];
     const days = await Promise.all(
       (result.days ?? []).map(async (day: any) => ({
         ...day,
         // ITN-05: derived, never stored (startDate + dayNumber - 1).
         date: dayDate(itinerary.startDate, day.dayNumber),
         budgets: await Promise.all(
-          (day.budgets ?? []).map(async (entry: any) => ({
-            ...entry,
-            displayAmount: await convertAmount(
-              Number(entry.amount),
-              entry.currency,
-            ),
-            displayCurrency: currency,
-          })),
+          (day.budgets ?? []).map(async (entry: any) => {
+            const converted = await convertAmount(Number(entry.amount), entry.currency);
+            entryRows.push({ category: entry.category, type: entry.type, converted });
+            return { ...entry, displayAmount: converted, displayCurrency: currency };
+          }),
         ),
       })),
     );
+    const presentedCosts = await Promise.all(
+      transportCosts.map(async (cost: any) => ({
+        ...cost,
+        displayAmount: await convertAmount(Number(cost.amount), cost.currency),
+        displayCurrency: currency,
+      })),
+    );
+    const { breakdown, grandTotal } = buildBreakdown(
+      entryRows,
+      presentedCosts.map((cost: any) => ({ converted: cost.displayAmount })),
+    );
+    const exchangeRates = [...ratesUsed.values()];
     return {
       ...result,
       days,
@@ -620,20 +620,19 @@ export class ItinerariesService {
           currency: booking.currency,
         })),
       },
-      transportCosts: await Promise.all(
-        transportCosts.map(async (cost: any) => ({
-          ...cost,
-          displayAmount: await convertAmount(
-            Number(cost.amount),
-            cost.currency,
-          ),
-          displayCurrency: currency,
-        })),
-      ),
+      transportCosts: presentedCosts,
       budgetSummary: {
         currency,
-        plannedTotal: await toTotal(BudgetEntryType.PLANNED),
-        actualTotal: await toTotal(BudgetEntryType.ACTUAL),
+        // Unchanged: planned = planned entries + intercity transport costs; actual = actual entries.
+        plannedTotal: grandTotal.planned,
+        actualTotal: grandTotal.actual,
+        // ITN-14: the same totals per bucket (food, accommodation, in_city_transport, activities and
+        // intercity_transport), each with planned and actual.
+        breakdown,
+        grandTotal,
+        // ITN-18: the rates the conversion used and the age of the least fresh one (null: nothing converted).
+        exchangeRates,
+        ratesAsOf: ratesAsOf(exchangeRates),
       },
     };
   }
