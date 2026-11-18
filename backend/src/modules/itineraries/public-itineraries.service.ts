@@ -6,7 +6,9 @@ import { presentAuthor } from '../../common/users/deleted-user';
 import { paged } from '../../common/pagination/pagination';
 import { fieldErrors } from '../../common/pipes/validation.pipe';
 import { User } from '../../users/user.schema';
-import { PublicItinerarySearchQueryDto } from './dto/public-itineraries.dto';
+import { CloneItineraryDto, PublicItinerarySearchQueryDto } from './dto/public-itineraries.dto';
+import { ItinerariesService } from './itineraries.service';
+import { BudgetEntryType } from './schemas/budget.schema';
 import { ItineraryVisibility } from './enums/itinerary-visibility.enum';
 import { cityGroups, dayDate } from './itinerary-days';
 import { Itinerary } from './schemas/itinerary.schema';
@@ -44,7 +46,81 @@ export class PublicItinerariesService {
   constructor(
     @InjectModel(Itinerary.name) private readonly itineraries: Model<Itinerary>,
     @InjectModel(User.name) private readonly users: Model<User>,
+    private readonly itinerariesService: ItinerariesService,
   ) {}
+
+  /**
+   * ITN-21: copies an itinerary into the caller's account as a new PRIVATE itinerary with attribution
+   * (clonedFrom). The source must be public, or the caller's own; anything else is 404.
+   * Copied: title, countries, days, notes, activity name / description / time, planned budget entries and
+   * transport costs. Never copied: images, activity costs, actual spending, booking links, payments.
+   * Dates are derived, so a different startDate just moves the whole clone (an end date keeps its length).
+   */
+  async clone(userId: string, id: string, dto: CloneItineraryDto) {
+    if (!isValidObjectId(id) || !isValidObjectId(userId)) throw new BadRequestException('Invalid MongoDB ID');
+    const source: any = await this.itineraries.findOne({ _id: new Types.ObjectId(id) }).lean().exec();
+    const isOwner = !!source && String(source.ownerId) === userId;
+    if (!source || (source.visibility !== ItineraryVisibility.PUBLIC && !isOwner)) {
+      throw new NotFoundException('Itinerary not found');
+    }
+    const authorName = (await this.authorNames([source.ownerId])).get(String(source.ownerId)) ?? presentAuthor(null).name;
+
+    const startDate = dto.startDate ? new Date(dto.startDate) : source.startDate;
+    const endDate = source.endDate ? new Date(startDate.getTime() + (source.endDate.getTime() - source.startDate.getTime())) : null;
+
+    const newDayIds = new Map<string, Types.ObjectId>();
+    const days = (source.days ?? []).map((day: any) => {
+      const _id = new Types.ObjectId();
+      newDayIds.set(String(day._id), _id);
+      return {
+        _id,
+        dayNumber: day.dayNumber,
+        cityId: day.cityId,
+        notes: day.notes ?? '',
+        activities: (day.activities ?? []).map((activity: any) => ({
+          name: activity.name,
+          description: activity.description,
+          ...(activity.time ? { time: activity.time } : {}),
+        })),
+        budgets: (day.budgets ?? [])
+          .filter((entry: any) => entry.type !== BudgetEntryType.ACTUAL)
+          .map((entry: any) => ({
+            description: entry.description,
+            category: entry.category,
+            amount: entry.amount,
+            currency: entry.currency,
+            type: BudgetEntryType.PLANNED,
+            incurredAt: new Date(),
+          })),
+      };
+    });
+    const transportCosts = (source.transportCosts ?? [])
+      .filter((cost: any) => newDayIds.has(String(cost.dayId)))
+      .map((cost: any) => ({
+        mode: cost.mode,
+        fromCityId: cost.fromCityId,
+        toCityId: cost.toCityId,
+        amount: cost.amount,
+        currency: cost.currency,
+        dayId: newDayIds.get(String(cost.dayId)),
+      }));
+
+    const created = await this.itineraries.create({
+      ownerId: new Types.ObjectId(userId),
+      title: source.title,
+      countryIds: source.countryIds,
+      startDate,
+      endDate,
+      days,
+      transportCosts,
+      visibility: ItineraryVisibility.PRIVATE,
+      displayCurrency: source.displayCurrency,
+      hotelBookingIds: [],
+      flightBookingIds: [],
+      clonedFrom: { itineraryId: source._id, authorName },
+    } as never);
+    return this.itinerariesService.get(userId, String(created._id));
+  }
 
   async search(query: PublicItinerarySearchQueryDto) {
     if (query.from && query.to && query.from > query.to) {

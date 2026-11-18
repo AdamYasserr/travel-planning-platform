@@ -153,6 +153,117 @@ describe('itineraries: days, budget, images, public view, clone and context sear
     });
   });
 
+  describe('clone (ITN-21)', () => {
+    const clone = (user: { agent: any }, id: string, body?: Record<string, unknown>) => user.agent.post(`/api/itineraries/${id}/clone`).send(body ?? {});
+
+    /** A public itinerary: 2 days (cairo, dubai), an activity with a cost and an image, planned + actual budget, a transport cost, bookings. */
+    async function original(owner: TestUser, body: Record<string, unknown> = {}) {
+      const id = await newItinerary(owner, { title: 'Nile and Gulf', visibility: 'public', startDate: day(60), endDate: day(66), displayCurrency: 'EUR', ...body });
+      const [d1, d2] = await addDays(owner, id, ['cairo', 'dubai']);
+      await owner.agent.patch(`/api/itineraries/${id}/days/${d1}`).send({ notes: 'Start early' });
+      const act = await owner.agent.post(`/api/itineraries/${id}/days/${d1}/activities`).send({ name: 'Pyramids', description: 'Visit the plateau', time: '09:30', cost: 77 });
+      const activityId = String(act.body.days[0].activities[0]._id);
+      const png = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#112233' } }).png().toBuffer();
+      expect((await owner.agent.post(`/api/activities/${activityId}/images`).attach('file', png, { filename: 'a.png', contentType: 'image/png' })).status).toBe(201);
+      const budget = (category: string, amount: number, type: string) =>
+        owner.agent.post(`/api/itineraries/${id}/days/${d1}/budgets`).send({ description: `${category} ${type}`, category, amount, currency: 'EUR', type });
+      await budget('food', 30, 'planned');
+      await budget('activities', 99, 'actual');
+      await owner.agent.post(`/api/itineraries/${id}/transport-costs`).send({ mode: 'Flight', fromCityId: 'cairo', toCityId: 'dubai', amount: 150, currency: 'EUR', dayId: d2 });
+      await model('Itinerary').updateOne({ _id: id }, { $set: { hotelBookingIds: [new Types.ObjectId()], flightBookingIds: [new Types.ObjectId()] } });
+      return { id, d1, d2, activityId };
+    }
+
+    it('copies the plan into a new PRIVATE itinerary of the caller, with attribution', async () => {
+      const owner = await createUser(ctx);
+      const fan = await createUser(ctx);
+      const src = await original(owner);
+
+      const res = await clone(fan, src.id);
+      expect(res.status).toBe(201);
+      const c = res.body;
+      expect(c._id).not.toBe(src.id);
+      expect(c).toMatchObject({ title: 'Nile and Gulf', visibility: 'private', ownerId: fan.id, countryIds: ['EG', 'AE'], displayCurrency: 'EUR' });
+      expect(c.clonedFrom).toEqual({ itineraryId: src.id, authorName: owner.name });
+      expect(c.startDate).toBe(`${day(60)}T00:00:00.000Z`);
+      expect(c.endDate).toBe(`${day(66)}T00:00:00.000Z`);
+      expect(c.days.map((d: any) => [d.dayNumber, d.cityId, d.date, d.notes])).toEqual([[1, 'cairo', day(60), 'Start early'], [2, 'dubai', day(61), '']]);
+      expect(c.days[0].activities).toEqual([expect.objectContaining({ name: 'Pyramids', description: 'Visit the plateau', time: '09:30', images: [] })]);
+      expect(c.days[0].activities[0].cost).toBeUndefined();
+      expect(c.days[0].activities[0].images).toEqual([]);
+
+      // Planned budget entries and transport costs only; the transport cost points at the clone's own day.
+      expect(c.days[0].budgets.map((b: any) => [b.category, b.amount, b.type])).toEqual([['food', 30, 'planned']]);
+      expect(c.budgetSummary).toMatchObject({ currency: 'EUR', plannedTotal: 180, actualTotal: 0 });
+      expect(c.transportCosts).toHaveLength(1);
+      expect(c.transportCosts[0]).toMatchObject({ mode: 'Flight', amount: 150, currency: 'EUR', dayId: String(c.days[1]._id) });
+      expect(String(c.days[1]._id)).not.toBe(src.d2);
+
+      // No bookings, no payments; stored separately from the original, which is untouched.
+      expect(c.hotelBookingIds).toEqual([]);
+      expect(c.flightBookingIds).toEqual([]);
+      expect(c.linkedBookings).toEqual({ hotels: [], flights: [] });
+      const stored: any = await model('Itinerary').findById(c._id).lean();
+      expect(stored.days.flatMap((d: any) => d.activities.flatMap((a: any) => a.mediaIds ?? []))).toEqual([]);
+      const before: any = await model('Itinerary').findById(src.id).lean();
+      expect(before.hotelBookingIds).toHaveLength(1);
+      expect(before.days[0].activities[0].mediaIds).toHaveLength(1);
+      expect(before.days[0].budgets).toHaveLength(2);
+      expect(await model('Media').countDocuments({ targetId: before.days[0].activities[0]._id })).toBe(1);
+
+      // The clone is private: not in the public search, not readable by anyone else; editing it leaves the original alone.
+      expect((await ctx.http().get(`/api/itineraries/public/${c._id}`)).status).toBe(404);
+      expect((await owner.agent.get(`/api/itineraries/${c._id}`)).status).toBe(404);
+      expect((await fan.agent.get(`/api/itineraries/${c._id}`)).status).toBe(200);
+      expect((await fan.agent.patch(`/api/itineraries/${c._id}`).send({ title: 'My own' })).status).toBe(200);
+      expect((await ctx.http().get(`/api/itineraries/public/${src.id}`)).body.title).toBe('Nile and Gulf');
+    });
+
+    it('an optional startDate moves the whole clone and keeps the end date\'s distance', async () => {
+      const owner = await createUser(ctx);
+      const fan = await createUser(ctx);
+      const src = await original(owner);
+      const res = await clone(fan, src.id, { startDate: day(200) });
+      expect(res.status).toBe(201);
+      expect(res.body.startDate).toBe(`${day(200)}T00:00:00.000Z`);
+      expect(res.body.endDate).toBe(`${day(206)}T00:00:00.000Z`);
+      expect(res.body.days.map((d: any) => d.date)).toEqual([day(200), day(201)]);
+      const open = await clone(fan, await newItinerary(owner, { visibility: 'public' }), {});
+      expect(open.body.endDate).toBeNull();
+    });
+
+    it("someone else's private itinerary, an unknown one and a bad id never clone; the owner may clone their own private one", async () => {
+      const owner = await createUser(ctx);
+      const fan = await createUser(ctx);
+      const priv = await original(owner, { visibility: 'private' });
+      expect((await clone(fan, priv.id)).status).toBe(404);
+      expect((await clone(fan, '507f1f77bcf86cd799439011')).status).toBe(404);
+      expect((await clone(fan, 'nope')).status).toBe(400);
+      expect((await ctx.http().post(`/api/itineraries/${priv.id}/clone`).send({})).status).toBe(401);
+      expect(await model('Itinerary').countDocuments({ ownerId: fan.id })).toBe(0);
+
+      const own = await clone(owner, priv.id);
+      expect(own.status).toBe(201);
+      expect(own.body.clonedFrom).toEqual({ itineraryId: priv.id, authorName: owner.name });
+
+      for (const body of [{ startDate: 'tomorrow' }, { startDate: '2027-13-40' }, { title: 'x' }]) {
+        expect({ body, status: (await clone(fan, (await original(owner)).id, body)).status }).toEqual({ body, status: 400 });
+      }
+    });
+
+    it('the attribution keeps the author name, and says "Deleted user" for a deactivated account', async () => {
+      const owner = await createUser(ctx);
+      const fan = await createUser(ctx);
+      const src = await original(owner);
+      const first = await clone(fan, src.id);
+      expect(first.body.clonedFrom.authorName).toBe(owner.name);
+      await model('User').updateOne({ _id: owner.id }, { $set: { isActive: false, deactivatedAt: new Date() } });
+      const second = await clone(fan, src.id);
+      expect(second.body.clonedFrom.authorName).toBe('Deleted user');
+      expect((await fan.agent.get(`/api/itineraries/${first.body._id}`)).body.clonedFrom.authorName).toBe(owner.name);
+    });
+  });
+
   describe('activity images and upload limits (ITN-12, GEN-08)', () => {
     const png = () => sharp({ create: { width: 4, height: 4, channels: 3, background: '#cc3300' } }).png().toBuffer();
     const jpg = () => sharp({ create: { width: 4, height: 4, channels: 3, background: '#0033cc' } }).jpeg().toBuffer();

@@ -568,7 +568,6 @@ export class ItinerariesService {
   }
 
   private async present(itinerary: any, currency: string) {
-    const transportCosts = itinerary.transportCosts ?? [];
     // The rate used for each source currency, so the summary can say which rates (and which date) it relied on.
     const ratesUsed = new Map<string, RateUsed>();
     const convertAmount = async (amount: number, from: string) => {
@@ -586,6 +585,8 @@ export class ItinerariesService {
       return quote.convertedAmount;
     };
     const result = itinerary.toObject();
+    // Plain objects: spreading the Mongoose subdocuments would return their internals instead of their fields.
+    const transportCosts = result.transportCosts ?? [];
     const [hotelBookings, flightBookings] = await Promise.all([
       itinerary.hotelBookingIds?.length
         ? this.hotelBookings.find({

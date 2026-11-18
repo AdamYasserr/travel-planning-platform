@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsOptional, Matches } from 'class-validator';
+import { IsDateString, IsOptional, Matches } from 'class-validator';
 
 import { PageQueryDto } from '../../../common/pagination/pagination';
 import { IsCalendarDate } from '../../../common/validators/calendar-date.decorator';
@@ -32,4 +32,15 @@ export class PublicItinerarySearchQueryDto extends PageQueryDto {
   @IsOptional()
   @IsCalendarDate()
   to?: string;
+}
+
+/** ITN-21: POST /itineraries/:id/clone. The body is optional. */
+export class CloneItineraryDto {
+  @ApiPropertyOptional({
+    example: '2027-03-01',
+    description: 'The clone\'s start date. Day dates are derived from it, and an end date keeps the same length. Default: the original start date.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  startDate?: string;
 }

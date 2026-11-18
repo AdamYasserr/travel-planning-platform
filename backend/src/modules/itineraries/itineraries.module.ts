@@ -13,6 +13,7 @@ import { MediaModule } from "../media/media.module";
 import { ReferenceDataModule } from "../reference-data/reference-data.module";
 import { User, UserSchema } from "../../users/user.schema";
 import { ItinerariesController } from "./itineraries.controller";
+import { ItineraryCloneController } from "./itinerary-clone.controller";
 import { PublicItinerariesController } from "./public-itineraries.controller";
 import { PublicItinerariesService } from "./public-itineraries.service";
 import { ItineraryItemsController } from "./itinerary-items.controller";
@@ -32,7 +33,7 @@ import { Itinerary, ItinerarySchema } from "./schemas/itinerary.schema";
     ]),
   ],
   // The public controller comes first so `itineraries/public/...` is never matched by `itineraries/:id`.
-  controllers: [PublicItinerariesController, ItinerariesController, ItineraryItemsController],
+  controllers: [PublicItinerariesController, ItinerariesController, ItineraryItemsController, ItineraryCloneController],
   providers: [ItinerariesService, PublicItinerariesService],
   exports: [ItinerariesService],
 })

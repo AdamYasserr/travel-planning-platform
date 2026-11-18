@@ -14,6 +14,18 @@ function daysAreWithinLimitAndSequential(days: ItineraryDay[]): boolean {
   );
 }
 
+/** ITN-21: where a cloned itinerary came from. The author's name is kept even if the original is deleted. */
+@Schema({ _id: false })
+export class ClonedFrom {
+  @Prop({ type: MongooseSchema.Types.ObjectId, required: true })
+  itineraryId: Types.ObjectId;
+
+  @Prop({ type: String, required: true, trim: true })
+  authorName: string;
+}
+
+export const ClonedFromSchema = SchemaFactory.createForClass(ClonedFrom);
+
 @Schema({ timestamps: true })
 export class Itinerary {
   declare createdAt: Date;
@@ -98,6 +110,9 @@ export class Itinerary {
     default: [],
   })
   flightBookingIds: Types.ObjectId[];
+
+  @Prop({ type: ClonedFromSchema, default: undefined })
+  clonedFrom?: ClonedFrom;
 }
 
 export const ItinerarySchema = SchemaFactory.createForClass(Itinerary);
