@@ -2,7 +2,7 @@ import { Types } from 'mongoose';
 import sharp from 'sharp';
 
 import { startApp, type E2EContext } from './helpers/app';
-import { createUser, day, idOf, type TestUser } from './helpers/factories';
+import { at, createAirline, createFlight, createHotelWithRooms, createUser, day, idOf, type TestUser } from './helpers/factories';
 import { seedReference } from './helpers/reference';
 
 /**
@@ -150,6 +150,126 @@ describe('itineraries: days, budget, images, public view, clone and context sear
 
       await model('Itinerary').updateOne({ _id: trip.id }, { $set: { visibility: 'private' } });
       expect((await ctx.http().get(url)).status).toBe(404);
+    });
+  });
+
+  describe('hotel and flight search in the itinerary context (ITN-25, ITN-26)', () => {
+    /** cairo (days 30-31), dubai (day 32), cairo (day 33) */
+    async function trip(user: TestUser, start = 30) {
+      const id = await newItinerary(user, { startDate: day(start) });
+      await addDays(user, id, ['cairo', 'cairo', 'dubai', 'cairo']);
+      return id;
+    }
+    const hotels = (user: { agent: any }, id: string, q = '') => user.agent.get(`/api/itineraries/${id}/hotels?guests=1${q}`);
+    const flights = (user: { agent: any }, id: string, q = '') => user.agent.get(`/api/itineraries/${id}/flights${q}`);
+    const fields = (res: any) => (res.body.errors ?? []).map((e: any) => e.field);
+
+    it('hotels: the same search as GET /hotels/search, for the city and dates of a city group', async () => {
+      const user = await createUser(ctx);
+      const cairoHotel = await createHotelWithRooms(ctx, { rooms: 2, cityId: 'cairo', countryId: 'EG', availability: { startDate: day(20), endDate: day(60) } });
+      const dubaiHotel = await createHotelWithRooms(ctx, { rooms: 1, cityId: 'dubai', countryId: 'AE', availability: { startDate: day(20), endDate: day(60) } });
+      const id = await trip(user);
+
+      const first = await hotels(user, id);
+      expect(first.status).toBe(200);
+      expect(first.body.itineraryId).toBe(id);
+      expect(first.body.context).toEqual({ group: 1, groups: 3, cityId: 'cairo', checkIn: day(30), checkOut: day(32) });
+      expect(first.body.items.map((h: any) => h.hotelId ?? h.id ?? h._id)).toEqual(expect.arrayContaining([cairoHotel.hotelId]));
+      expect(JSON.stringify(first.body.items)).not.toContain(dubaiHotel.hotelId);
+      const direct = await ctx.http().get(`/api/hotels/search?city=cairo&guests=1&checkIn=${day(30)}&checkOut=${day(32)}`);
+      const { itineraryId: _i, context: _c, ...page } = first.body;
+      expect(page).toEqual(direct.body);
+
+      // By group number or by city; the city's FIRST group when it appears twice.
+      expect((await hotels(user, id, '&group=2')).body.context).toEqual({ group: 2, groups: 3, cityId: 'dubai', checkIn: day(32), checkOut: day(33) });
+      expect(JSON.stringify((await hotels(user, id, '&city=dubai')).body.items)).toContain(dubaiHotel.hotelId);
+      expect((await hotels(user, id, '&group=3')).body.context).toMatchObject({ group: 3, cityId: 'cairo', checkIn: day(33), checkOut: day(34) });
+      expect((await hotels(user, id, '&city=cairo')).body.context.group).toBe(1);
+
+      // The stay may be narrowed inside the group, never widened.
+      const narrow = await hotels(user, id, `&checkIn=${day(31)}&checkOut=${day(32)}`);
+      expect(narrow.status).toBe(200);
+      expect(narrow.body.context).toMatchObject({ checkIn: day(31), checkOut: day(32) });
+      expect(fields(await hotels(user, id, `&checkIn=${day(29)}`))).toEqual(['checkIn']);
+      expect(fields(await hotels(user, id, `&checkOut=${day(33)}`))).toEqual(['checkOut']);
+      expect(fields(await hotels(user, id, `&checkIn=${day(31)}&checkOut=${day(31)}`))).toEqual(['checkOut']);
+    });
+
+    it('hotels: validation, ownership and the hotel search filters', async () => {
+      const user = await createUser(ctx);
+      const other = await createUser(ctx);
+      const id = await trip(user);
+      expect(fields(await hotels(user, id, '&group=4'))).toEqual(['group']);
+      expect(fields(await hotels(user, id, '&group=0'))).toEqual(['group']);
+      expect(fields(await hotels(user, id, '&city=paris'))).toEqual(['city']);
+      expect(fields(await hotels(user, id, '&group=2&city=cairo'))).toEqual(['city']);
+      expect(fields(await hotels(user, id, '&minPrice=9&maxPrice=1'))).toEqual(['minPrice']);
+      expect((await user.agent.get(`/api/itineraries/${id}/hotels`)).status).toBe(400); // guests is required
+      expect((await hotels(user, id, '&unknown=1')).status).toBe(400);
+      expect((await hotels(user, id, '&country=EG')).status).toBe(400); // the itinerary decides the place
+      expect(fields(await hotels(user, await newItinerary(user)))).toEqual(['itinerary']);
+
+      expect((await hotels(other, id)).status).toBe(404);
+      expect((await hotels(user, '507f1f77bcf86cd799439011')).status).toBe(404);
+      expect((await hotels(user, 'nope')).status).toBe(400);
+      expect((await ctx.http().get(`/api/itineraries/${id}/hotels?guests=1`)).status).toBe(401);
+
+      // A stay in the past is refused by the hotel search itself.
+      const past = await newItinerary(user, { startDate: day(-10) });
+      await addDays(user, past, ['cairo']);
+      expect(fields(await hotels(user, past))).toEqual(['checkIn']);
+    });
+
+    it('flights: the same search as GET /flights/search, into a city group from the previous one', async () => {
+      const user = await createUser(ctx);
+      const airline = await createAirline(ctx);
+      const toDubai = await createFlight(ctx, airline, { from: 'CAI', to: 'DXB', departure: at(32, '08:00'), arrival: at(32, '12:00') });
+      const dayBefore = await createFlight(ctx, airline, { from: 'CAI', to: 'DXB', departure: at(31, '08:00'), arrival: at(31, '12:00') });
+      const earlier = await createFlight(ctx, airline, { from: 'CAI', to: 'DXB', departure: at(30, '08:00'), arrival: at(30, '12:00') });
+      const home = await createFlight(ctx, airline, { from: 'DXB', to: 'CAI', departure: at(33, '08:00'), arrival: at(33, '12:00') });
+      const id = await trip(user);
+      const idsOf = (res: any) => res.body.items.map((f: any) => f.flightId ?? f.id ?? f._id).sort();
+
+      const res = await flights(user, id, '?group=2');
+      expect(res.status).toBe(200);
+      expect(res.body.context).toEqual({ group: 2, groups: 3, fromCity: 'cairo', toCity: 'dubai', date: day(32) });
+      expect(idsOf(res)).toEqual([toDubai]);
+      const direct = await ctx.http().get(`/api/flights/search?origin=CAI&destination=DXB&departureDate=${day(32)}`);
+      const { itineraryId: _i, context: _c, ...page } = res.body;
+      expect(page).toEqual(direct.body.outbound);
+      expect(res.body.items[0].cabins[0]).toMatchObject({ id: expect.any(String), cabinClass: 'Economy' });
+
+      expect(idsOf(await flights(user, id, `?city=dubai&date=${day(31)}`))).toEqual([dayBefore]);
+      expect((await flights(user, id, '?group=3')).body.context).toMatchObject({ fromCity: 'dubai', toCity: 'cairo', date: day(33) });
+      expect(idsOf(await flights(user, id, '?group=3'))).toEqual([home]);
+      void earlier;
+    });
+
+    it('flights: validation, filters and ownership', async () => {
+      const user = await createUser(ctx);
+      const other = await createUser(ctx);
+      const id = await trip(user);
+      expect(fields(await flights(user, id))).toEqual(['fromCity']); // group 1 has no earlier city
+      expect(fields(await flights(user, id, '?fromCity=cairo'))).toEqual(['fromCity']); // same as the destination
+      const london = await flights(user, id, '?fromCity=london');
+      expect(london.status).toBe(200);
+      expect(london.body.items).toEqual([]);
+      expect(london.body.message).toBe('No flights found');
+      expect(london.body.context).toMatchObject({ group: 1, fromCity: 'london', toCity: 'cairo', date: day(30) });
+
+      expect(fields(await flights(user, id, `?group=2&date=${day(30)}`))).toEqual(['date']);
+      expect(fields(await flights(user, id, `?group=2&date=${day(33)}`))).toEqual(['date']);
+      expect(fields(await flights(user, id, '?group=2&adults=1&infants=2'))).toEqual(['infants']);
+      expect(fields(await flights(user, id, '?group=2&minPrice=9&maxPrice=1'))).toEqual(['minPrice']);
+      expect(fields(await flights(user, id, '?group=9'))).toEqual(['group']);
+      expect(fields(await flights(user, id, '?city=paris'))).toEqual(['city']);
+      expect(fields(await flights(user, id, '?group=2&fromCity=frankfurt&city=dubai'))).toEqual([]);
+      for (const bad of ['?group=2&adults=0', '?group=2&date=soon', '?group=2&origin=CAI', '?group=2&limit=101']) {
+        expect({ bad, status: (await flights(user, id, bad)).status }).toEqual({ bad, status: 400 });
+      }
+      expect((await flights(other, id, '?group=2')).status).toBe(404);
+      expect((await ctx.http().get(`/api/itineraries/${id}/flights?group=2`)).status).toBe(401);
+      expect(fields(await flights(user, await newItinerary(user), '?fromCity=london'))).toEqual(['itinerary']);
     });
   });
 

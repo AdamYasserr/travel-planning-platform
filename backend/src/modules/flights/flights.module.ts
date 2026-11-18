@@ -86,6 +86,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     MongooseModule,
     FlightsService,
     CabinInventoryService,
+    FlightSearchService,
   ],
 })
 export class FlightsModule {}

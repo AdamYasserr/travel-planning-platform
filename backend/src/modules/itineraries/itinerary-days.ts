@@ -44,3 +44,43 @@ export function cityGroups(
   }
   return groups;
 }
+
+/** A YYYY-MM-DD date plus `days` days (UTC). */
+export function addDaysToIso(date: string, days: number): string {
+  return isoDay(new Date(Date.parse(`${date}T00:00:00.000Z`) + days * DAY_MS));
+}
+
+export interface GroupChoice {
+  /** The 1-based number of the group (its place in the city groups). */
+  index: number;
+  group: CityGroup;
+}
+
+/**
+ * ITN-25 / ITN-26: which city group a search is about. `group` is the 1-based number of the group,
+ * `city` a city_id (its FIRST group); both must agree; neither means the first group.
+ * Returns an error as { field, message } instead of a group when the choice is not possible.
+ */
+export function pickCityGroup(
+  groups: CityGroup[],
+  choice: { group?: number; city?: string },
+): GroupChoice | { field: string; message: string } {
+  if (!groups.length) return { field: 'itinerary', message: 'Add at least one day with a city to this itinerary first' };
+  let index = 1;
+  if (choice.group !== undefined) {
+    if (choice.group < 1 || choice.group > groups.length) {
+      return { field: 'group', message: `group must be between 1 and ${groups.length} (this itinerary has ${groups.length} city group(s))` };
+    }
+    index = choice.group;
+    if (choice.city !== undefined && groups[index - 1].cityId !== choice.city) {
+      return { field: 'city', message: `Group ${index} is in ${groups[index - 1].cityId}, not ${choice.city}` };
+    }
+  } else if (choice.city !== undefined) {
+    const found = groups.findIndex((g) => g.cityId === choice.city);
+    if (found < 0) {
+      return { field: 'city', message: `city must be one of the itinerary's cities (${[...new Set(groups.map((g) => g.cityId))].join(', ')})` };
+    }
+    index = found + 1;
+  }
+  return { index, group: groups[index - 1] };
+}

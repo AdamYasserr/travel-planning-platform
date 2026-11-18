@@ -1,4 +1,4 @@
-import { cityGroups, dayDate } from './itinerary-days';
+import { addDaysToIso, cityGroups, dayDate, pickCityGroup } from './itinerary-days';
 
 describe('derived day dates and city groups (ITN-05, ITN-09)', () => {
   const start = new Date('2026-12-30T00:00:00.000Z');
@@ -29,5 +29,37 @@ describe('derived day dates and city groups (ITN-05, ITN-09)', () => {
 
   it('no days, no groups', () => {
     expect(cityGroups([], start)).toEqual([]);
+  });
+});
+
+describe('choosing a city group for a search (ITN-25, ITN-26)', () => {
+  const groups = cityGroups(
+    [
+      { _id: 'a', dayNumber: 1, cityId: 'cairo' },
+      { _id: 'b', dayNumber: 2, cityId: 'dubai' },
+      { _id: 'c', dayNumber: 3, cityId: 'cairo' },
+    ],
+    new Date('2026-12-01T00:00:00.000Z'),
+  );
+
+  it('defaults to the first group; a city means its first group; a group number picks that group', () => {
+    expect(pickCityGroup(groups, {})).toMatchObject({ index: 1, group: { cityId: 'cairo' } });
+    expect(pickCityGroup(groups, { city: 'dubai' })).toMatchObject({ index: 2 });
+    expect(pickCityGroup(groups, { city: 'cairo' })).toMatchObject({ index: 1 });
+    expect(pickCityGroup(groups, { group: 3 })).toMatchObject({ index: 3, group: { cityId: 'cairo', startDate: '2026-12-03' } });
+    expect(pickCityGroup(groups, { group: 3, city: 'cairo' })).toMatchObject({ index: 3 });
+  });
+
+  it('reports the field that is wrong', () => {
+    expect(pickCityGroup(groups, { group: 4 })).toMatchObject({ field: 'group' });
+    expect(pickCityGroup(groups, { group: 0 })).toMatchObject({ field: 'group' });
+    expect(pickCityGroup(groups, { city: 'paris' })).toMatchObject({ field: 'city' });
+    expect(pickCityGroup(groups, { group: 2, city: 'cairo' })).toMatchObject({ field: 'city' });
+    expect(pickCityGroup([], {})).toMatchObject({ field: 'itinerary' });
+  });
+
+  it('adds days to a date', () => {
+    expect(addDaysToIso('2026-12-31', 1)).toBe('2027-01-01');
+    expect(addDaysToIso('2026-03-01', -1)).toBe('2026-02-28');
   });
 });

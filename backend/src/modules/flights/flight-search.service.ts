@@ -68,14 +68,54 @@ export class FlightSearchService {
     @InjectModel(CancellationPolicy.name) private readonly cancellationModel: Model<CancellationPolicy>,
   ) {}
 
-  /** GET /flights/search: validates the cross-field rules, then runs the outbound (and return) search. */
-  async searchFromQuery(query: FlightSearchQueryDto) {
+  /** The passenger and price rules every flight search shares (plain search and the itinerary search). */
+  private sharedErrors(query: Pick<FlightSearchQueryDto, 'adults' | 'infants' | 'minPrice' | 'maxPrice'>): FieldError[] {
     const errors: FieldError[] = [];
-    if (query.origin === query.destination) errors.push({ field: 'destination', messages: ['destination must differ from origin'] });
     if (query.infants > query.adults) errors.push({ field: 'infants', messages: ['infants must not exceed adults: each infant needs an adult'] });
     if (query.minPrice !== undefined && query.maxPrice !== undefined && query.minPrice > query.maxPrice) {
       errors.push({ field: 'minPrice', messages: ['minPrice must not be greater than maxPrice'] });
     }
+    return errors;
+  }
+
+  /** ITN-26: the outbound search between ALL airports of one city and ALL airports of another, on a local date. */
+  async searchBetweenCities(
+    query: Pick<FlightSearchQueryDto, 'adults' | 'children' | 'infants' | 'cabinClass' | 'minPrice' | 'maxPrice' | 'airlineId' | 'sortBy' | 'order' | 'page' | 'limit'> & {
+      originCityId: string;
+      destinationCityId: string;
+      departureDate: string;
+    },
+  ) {
+    const errors = this.sharedErrors(query);
+    const [origins, destinations] = await Promise.all([
+      this.airportModel.find({ cityId: query.originCityId }).lean().exec(),
+      this.airportModel.find({ cityId: query.destinationCityId }).lean().exec(),
+    ]);
+    if (!origins.length) errors.push({ field: 'fromCity', messages: [`There is no airport in ${query.originCityId}`] });
+    if (!destinations.length) errors.push({ field: 'city', messages: [`There is no airport in ${query.destinationCityId}`] });
+    // "Past" at the earliest local date among the origin airports (a date that is past everywhere).
+    const today = origins.map((a) => localDateInZone(new Date(), a.timeZone)).sort()[0];
+    if (today && query.departureDate < today) {
+      errors.push({ field: 'date', messages: [`date must not be in the past (today is ${today})`] });
+    }
+    if (errors.length) throw fieldErrors(errors);
+
+    const { earliestArrival: _ignored, ...page } = await this.search({
+      adults: query.adults, children: query.children, infants: query.infants, cabinClass: query.cabinClass,
+      minPrice: query.minPrice, maxPrice: query.maxPrice, airlineId: query.airlineId,
+      sortBy: query.sortBy, order: query.order, page: query.page, limit: query.limit,
+      originAirports: origins.map((a) => ({ iataCode: a.iataCode, timeZone: a.timeZone })),
+      destinationAirports: destinations.map((a) => a.iataCode),
+      localDate: query.departureDate,
+    });
+    return page;
+  }
+
+  /** GET /flights/search: validates the cross-field rules, then runs the outbound (and return) search. */
+  async searchFromQuery(query: FlightSearchQueryDto) {
+    const errors: FieldError[] = [];
+    if (query.origin === query.destination) errors.push({ field: 'destination', messages: ['destination must differ from origin'] });
+    errors.push(...this.sharedErrors(query));
     if (query.returnDate && query.returnDate < query.departureDate) {
       errors.push({ field: 'returnDate', messages: ['returnDate must not be before departureDate'] });
     }
