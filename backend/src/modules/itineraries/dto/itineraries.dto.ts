@@ -5,12 +5,14 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
   IsMongoId,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Length,
+  Max,
   MaxLength,
   Min,
   Matches,
@@ -66,7 +68,7 @@ export class CreateItineraryDto {
   visibility?: ItineraryVisibility;
 
   @ApiPropertyOptional({
-    example: "EGP",
+    example: "USD",
     description: "Currency for converted summary totals",
   })
   @IsOptional()
@@ -263,4 +265,27 @@ export class ReorderItineraryDaysDto {
   @ArrayUnique()
   @IsMongoId({ each: true })
   dayIds: string[];
+}
+
+/** GET /itineraries: the owner's own list, 10 per page by default, at most 100 (GEN-05). */
+export class ItineraryListQueryDto {
+  @ApiPropertyOptional({ minimum: 1, default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page = 1;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 10 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 10;
+
+  @ApiPropertyOptional({ example: "USD", description: "Currency for converted summary totals" })
+  @IsOptional()
+  @IsString()
+  currency?: string;
 }

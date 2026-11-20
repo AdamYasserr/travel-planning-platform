@@ -37,6 +37,33 @@ describe('itineraries: days, budget, images, public view, clone and context sear
   }
   const view = async (user: TestUser, id: string) => (await user.agent.get(`/api/itineraries/${id}`)).body;
 
+  describe('GET /itineraries: the owner\'s own list (GEN-05)', () => {
+    it('10 per page by default, own itineraries only, with the shared pagination shape', async () => {
+      const user = await createUser(ctx);
+      const other = await createUser(ctx);
+      for (let i = 0; i < 12; i++) await newItinerary(user, { title: `Trip ${i}` });
+      await newItinerary(other, { title: 'Not yours' });
+
+      const first = await user.agent.get('/api/itineraries');
+      expect(first.status).toBe(200);
+      expect(first.body.items).toHaveLength(10);
+      expect(first.body.pagination).toEqual({ page: 1, limit: 10, totalItems: 12, totalPages: 2 });
+      const second = await user.agent.get('/api/itineraries?page=2&limit=10');
+      expect(second.body.items).toHaveLength(2);
+      expect([...first.body.items, ...second.body.items].map((i: any) => i.title)).not.toContain('Not yours');
+      expect((await user.agent.get('/api/itineraries?limit=5')).body.pagination).toMatchObject({ limit: 5, totalPages: 3 });
+    });
+
+    it('a bad page or limit is 400, and the limit is capped at 100', async () => {
+      const user = await createUser(ctx);
+      for (const query of ['page=0', 'limit=0', 'limit=101', 'limit=abc', 'page=x']) {
+        expect((await user.agent.get(`/api/itineraries?${query}`)).status).toBe(400);
+      }
+      expect((await user.agent.get('/api/itineraries?limit=100')).status).toBe(200);
+      expect((await ctx.http().get('/api/itineraries')).status).toBe(401);
+    });
+  });
+
   describe('public search and detail (ITN-20, ITN-21)', () => {
     const search = (q = '', agent: { get: (url: string) => any } = ctx.http()) => agent.get(`/api/itineraries/public/search${q}`);
     const ids = (res: any) => res.body.items.map((i: any) => i.id).sort();

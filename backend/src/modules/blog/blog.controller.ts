@@ -81,6 +81,7 @@ export class BlogController {
     return this.blog.getPost(id, req.user?.userId);
   }
 
+  @ApiOperation({ summary: 'Edit a post of yours' })
   @Patch(':id')
   @ApiCookieAuth('access_token')
   update(
@@ -91,12 +92,14 @@ export class BlogController {
     return this.blog.updatePost(req.user.userId, id, dto);
   }
 
+  @ApiOperation({ summary: 'Delete a post of yours' })
   @Delete(':id')
   @ApiCookieAuth('access_token')
   remove(@Param('id') id: string, @Req() req: RequiredUserRequest) {
     return this.blog.deletePost(req.user.userId, id);
   }
 
+  @ApiOperation({ summary: 'Comment on a published post' })
   @Post(':id/comments')
   @ApiCookieAuth('access_token')
   addComment(
@@ -108,24 +111,28 @@ export class BlogController {
   }
 
   @Public()
+  @ApiOperation({ summary: 'List the comments of a post' })
   @Get(':id/comments')
   listComments(@Param('id') id: string, @Query() query: PageQueryDto) {
     // GEN-05: 10 per page by default, limit up to 100; a bad page or limit is a 400 on that field.
     return this.blog.listComments(id, query.page, query.limit);
   }
 
+  @ApiOperation({ summary: 'Like a post' })
   @Post(':id/like')
   @ApiCookieAuth('access_token')
   like(@Param('id') id: string, @Req() req: RequiredUserRequest) {
     return this.blog.likePost(req.user.userId, id);
   }
 
+  @ApiOperation({ summary: 'Remove your like from a post' })
   @Delete(':id/like')
   @ApiCookieAuth('access_token')
   unlike(@Param('id') id: string, @Req() req: RequiredUserRequest) {
     return this.blog.unlikePost(req.user.userId, id);
   }
 
+  @ApiOperation({ summary: 'Add an image to a post of yours' })
   @Post(':id/images')
   @ApiCookieAuth('access_token')
   @ApiConsumes('multipart/form-data')
@@ -149,6 +156,7 @@ export class BlogController {
     );
   }
 
+  @ApiOperation({ summary: 'Remove an image from a post of yours' })
   @Delete(':id/images/:imageId')
   @ApiCookieAuth('access_token')
   removeImage(
@@ -171,6 +179,7 @@ export class BlogController {
 export class CommentsController {
   constructor(private readonly blog: BlogService) {}
 
+  @ApiOperation({ summary: 'Edit a comment of yours' })
   @Patch(':id')
   update(
     @Param('id') id: string,
@@ -180,6 +189,7 @@ export class CommentsController {
     return this.blog.updateComment(req.user.userId, id, dto.body);
   }
 
+  @ApiOperation({ summary: 'Delete a comment of yours' })
   @Delete(':id')
   remove(@Param('id') id: string, @Req() req: RequiredUserRequest) {
     return this.blog.deleteComment(req.user.userId, id);
@@ -192,6 +202,7 @@ export class BlogTagsController {
   constructor(private readonly blog: BlogService) {}
 
   @Public()
+  @ApiOperation({ summary: 'List published posts with a tag' })
   @Get(':tag/posts')
   posts(@Param('tag') tag: string, @Query() query: PostListQueryDto) {
     return this.blog.listPostsByTag(tag, query);
@@ -204,6 +215,7 @@ export class BlogAuthorsController {
   constructor(private readonly blog: BlogService) {}
 
   @Public()
+  @ApiOperation({ summary: 'List the published posts of an author' })
   @Get(':id')
   author(@Param('id') id: string, @Query() query: PageQueryDto) {
     return this.blog.authorPage(id, query);

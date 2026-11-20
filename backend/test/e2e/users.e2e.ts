@@ -11,6 +11,12 @@ describe('user profile and account deletion (ACC-09, ACC-12)', () => {
   });
   afterAll(() => ctx.close());
 
+  it('a new account prefers the platform currency', async () => {
+    const user = await createUser(ctx);
+    const platform = (process.env.PLATFORM_CURRENCY || 'USD').toUpperCase();
+    expect((await user.agent.get('/api/users/me')).body.user.preferredCurrency).toBe(platform);
+  });
+
   describe('PATCH /users/me', () => {
     it('updates name, phone and a supported preferred currency', async () => {
       const user = await createUser(ctx);

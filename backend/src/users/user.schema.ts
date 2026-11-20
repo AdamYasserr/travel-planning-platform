@@ -21,7 +21,7 @@ export class User {
   @Prop({ type: String, trim: true, default: null })
   phone?: string | null;
 
-  @Prop({ type: String, default: 'EGP' })
+  @Prop({ type: String, default: () => (process.env.PLATFORM_CURRENCY || 'USD').trim().toUpperCase() })
   preferredCurrency: string;
 
   @Prop({ type: Date, required: true, default: Date.now })

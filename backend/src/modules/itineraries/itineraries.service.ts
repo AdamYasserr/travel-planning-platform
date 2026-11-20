@@ -76,14 +76,23 @@ export class ItinerariesService {
     return this.present(itinerary, itinerary.displayCurrency);
   }
 
-  async list(ownerId: string, displayCurrency?: string) {
+  async list(ownerId: string, displayCurrency?: string, page = 1, limit = 10) {
     const currency = await this.normalizeDisplayCurrency(displayCurrency);
-    const rows = await this.itineraries
-      .find({ ownerId })
-      .sort({ startDate: 1, _id: 1 });
-    return Promise.all(
+    const [rows, totalItems] = await Promise.all([
+      this.itineraries
+        .find({ ownerId })
+        .sort({ startDate: 1, _id: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      this.itineraries.countDocuments({ ownerId }),
+    ]);
+    const items = await Promise.all(
       rows.map((row) => this.present(row, currency ?? row.displayCurrency)),
     );
+    return {
+      items,
+      pagination: { page, limit, totalItems, totalPages: Math.ceil(totalItems / limit) },
+    };
   }
 
   async get(ownerId: string, id: string, displayCurrency?: string) {

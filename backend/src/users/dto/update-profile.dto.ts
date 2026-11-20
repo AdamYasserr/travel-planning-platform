@@ -23,7 +23,7 @@ export class UpdateProfileDto {
   @MaxLength(30)
   phone?: string | null;
 
-  @ApiPropertyOptional({ description: 'Preferred three-letter currency code', example: 'EGP', pattern: '^[A-Za-z]{3}$' })
+  @ApiPropertyOptional({ description: 'Preferred three-letter currency code', example: 'USD', pattern: '^[A-Za-z]{3}$' })
   @IsOptional()
   @IsString()
   @Transform(({ value }) =>

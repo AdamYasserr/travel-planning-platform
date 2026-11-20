@@ -18,6 +18,7 @@ import {
   CreateItineraryDto,
   CreateTransportCostDto,
   LinkBookingsDto,
+  ItineraryListQueryDto,
   ReorderItineraryDaysDto,
   UpdateBudgetEntryDto,
   UpdateItineraryActivityDto,
@@ -43,8 +44,8 @@ export class ItinerariesController {
 
   @Get()
   @ApiOperation({ summary: "List the signed-in user’s itineraries" })
-  list(@Req() req: AuthenticatedRequest, @Query("currency") currency?: string) {
-    return this.itineraries.list(req.user.userId, currency);
+  list(@Req() req: AuthenticatedRequest, @Query() query: ItineraryListQueryDto) {
+    return this.itineraries.list(req.user.userId, query.currency, query.page, query.limit);
   }
 
   @Get(":id")
@@ -59,6 +60,7 @@ export class ItinerariesController {
     return this.itineraries.get(req.user.userId, id, currency);
   }
 
+  @ApiOperation({ summary: "Edit an itinerary" })
   @Patch(":id")
   update(
     @Param("id") id: string,
@@ -68,11 +70,13 @@ export class ItinerariesController {
     return this.itineraries.update(req.user.userId, id, dto);
   }
 
+  @ApiOperation({ summary: "Delete an itinerary" })
   @Delete(":id")
   remove(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
     return this.itineraries.remove(req.user.userId, id);
   }
 
+  @ApiOperation({ summary: "Add a day to an itinerary" })
   @Post(":id/days")
   addDay(
     @Param("id") id: string,
@@ -105,6 +109,7 @@ export class ItinerariesController {
     return this.itineraries.reorderDays(req.user.userId, id, dto);
   }
 
+  @ApiOperation({ summary: "Edit a day" })
   @Patch(":id/days/:dayId")
   updateDay(
     @Param("id") id: string,
@@ -115,6 +120,7 @@ export class ItinerariesController {
     return this.itineraries.updateDay(req.user.userId, id, dayId, dto);
   }
 
+  @ApiOperation({ summary: "Delete a day" })
   @Delete(":id/days/:dayId")
   removeDay(
     @Param("id") id: string,
@@ -124,6 +130,7 @@ export class ItinerariesController {
     return this.itineraries.removeDay(req.user.userId, id, dayId);
   }
 
+  @ApiOperation({ summary: "Add an activity to a day" })
   @Post(":id/days/:dayId/activities")
   addActivity(
     @Param("id") id: string,
@@ -239,6 +246,7 @@ export class ItinerariesController {
     );
   }
 
+  @ApiOperation({ summary: "Add a transport cost" })
   @Post(":id/transport-costs")
   addTransportCost(
     @Param("id") id: string,
@@ -293,6 +301,7 @@ export class ItinerariesController {
     return this.itineraries.budgetSummary(req.user.userId, id, currency);
   }
 
+  @ApiOperation({ summary: "Link existing bookings to an itinerary" })
   @Post(":id/bookings")
   linkBookings(
     @Param("id") id: string,
@@ -307,6 +316,7 @@ export class ItinerariesController {
     );
   }
 
+  @ApiOperation({ summary: "Unlink a booking from an itinerary" })
   @Delete(":id/bookings/:bookingId")
   unlinkBooking(
     @Param("id") id: string,

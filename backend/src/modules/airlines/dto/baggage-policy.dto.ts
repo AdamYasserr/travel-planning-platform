@@ -29,7 +29,7 @@ export class UpdateBaggagePolicyDto {
   @Min(0)
   maxExtraBagsPerPassenger: number;
 
-  @ApiPropertyOptional({ description: 'Omit to use the platform currency (PLATFORM_CURRENCY). Any other value is rejected with 400 "currency must be <platform currency>".', example: 'EGP' })
+  @ApiPropertyOptional({ description: 'Omit to use the platform currency (PLATFORM_CURRENCY). Any other value is rejected with 400 "currency must be <platform currency>".', example: 'USD' })
   @IsOptional()
   @IsString()
   @IsNotEmpty()
