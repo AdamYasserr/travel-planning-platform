@@ -195,7 +195,7 @@ export class ReportsService {
               .findByIdAndUpdate(
                 targetObjectId,
                 { $set: { isHidden: true } },
-                { new: true },
+                { returnDocument: 'after' },
               )
               .exec()
           : await this.reviewModel.findByIdAndDelete(targetObjectId).exec();
@@ -219,7 +219,7 @@ export class ReportsService {
               .findOneAndUpdate(
                 { _id: targetObjectId, visibility: ItineraryVisibility.PUBLIC },
                 { $set: { visibility: ItineraryVisibility.PRIVATE } },
-                { new: true },
+                { returnDocument: 'after' },
               )
               .exec()
           : await this.itineraryModel.findByIdAndDelete(targetObjectId).exec();

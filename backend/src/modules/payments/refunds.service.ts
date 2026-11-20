@@ -126,7 +126,7 @@ export class RefundsService {
           $or: [{ lockedUntil: null }, { lockedUntil: { $lte: now } }],
         },
         { $set: { lockedUntil: new Date(now.getTime() + STRIPE_LEASE_MS) } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .exec();
     if (!claimed) return null;
@@ -267,7 +267,7 @@ export class RefundsService {
         set.failureCode = extra.failureCode ?? 'refund_failed';
       }
     }
-    const opts = extra.session ? { session: extra.session, new: true } : { new: true };
+    const opts = extra.session ? { session: extra.session, returnDocument: 'after' as const } : { returnDocument: 'after' as const };
     const updated = await this.refundModel
       .findOneAndUpdate({ _id: refund._id, status: RefundRecordStatus.PENDING }, { $set: set }, opts)
       .exec();

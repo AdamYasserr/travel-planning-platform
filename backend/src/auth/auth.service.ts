@@ -301,7 +301,7 @@ export class AuthService {
     const updated = await this.userModel.findOneAndUpdate(
       { _id: userId },
       { $inc: { failedLoginAttempts: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) return new UnauthorizedException(INVALID_CREDENTIALS);
 
@@ -310,7 +310,7 @@ export class AuthService {
       const locked = await this.userModel.findOneAndUpdate(
         { _id: userId, lockUntil: null },
         { $set: { lockUntil: new Date(Date.now() + LOCK_TIME_MS) } },
-        { new: true },
+        { returnDocument: 'after' },
       );
       const lockUntil = locked?.lockUntil ?? (await this.userModel.findById(userId))?.lockUntil;
       if (lockUntil) return this.locked(lockUntil);

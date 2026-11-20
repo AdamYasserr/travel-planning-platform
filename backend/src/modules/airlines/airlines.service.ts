@@ -186,7 +186,7 @@ export class AirlinesService {
     try {
       const updatedAirline = await this.airlineModel
         .findByIdAndUpdate(id, updateData, {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         })
         .exec();
@@ -277,7 +277,7 @@ const policyData = {
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             upsert: true,
             runValidators: true,
             setDefaultsOnInsert: true,
@@ -371,7 +371,7 @@ const policyData = {
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             upsert: true,
             runValidators: true,
             setDefaultsOnInsert: true,

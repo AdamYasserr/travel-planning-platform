@@ -67,7 +67,7 @@ describe('flight cancellation is atomic (FLT-06) on a real replica set', () => {
   }
 
   const markCancelled = (flightId: Types.ObjectId) => async (session: any) =>
-    !!(await flightModel.findOneAndUpdate({ _id: flightId, status: FlightStatus.SCHEDULED }, { $set: { status: FlightStatus.CANCELLED } }, { session, new: true }).exec());
+    !!(await flightModel.findOneAndUpdate({ _id: flightId, status: FlightStatus.SCHEDULED }, { $set: { status: FlightStatus.CANCELLED } }, { session, returnDocument: 'after' }).exec());
 
   it('a failure on the third booking rolls everything back', async () => {
     const { flight, inventory, bookingIds } = await seed();

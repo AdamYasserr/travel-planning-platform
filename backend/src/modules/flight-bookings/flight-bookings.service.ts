@@ -376,7 +376,7 @@ export class FlightBookingsService {
       .findOneAndUpdate(
         { _id: segment.cabin._id, flightId: segment.flight._id, availableSeats: { $gte: seats } },
         { $inc: { availableSeats: -seats } },
-        { new: true, session },
+        { returnDocument: 'after', session },
       )
       .lean<CabinInventory & { _id: Types.ObjectId }>()
       .exec();

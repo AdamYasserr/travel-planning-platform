@@ -71,7 +71,7 @@ describe('FlightBookingsService', () => {
     expect(inventoryReserve).toHaveBeenCalledWith(
       expect.objectContaining({ availableSeats: { $gte: 2 } }),
       { $inc: { availableSeats: -2 } },
-      expect.objectContaining({ new: true }),
+      expect.objectContaining({ returnDocument: 'after' }),
     );
     expect(created()).toMatchObject({
       totalPrice: 100,

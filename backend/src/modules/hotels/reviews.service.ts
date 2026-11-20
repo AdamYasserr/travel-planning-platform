@@ -89,7 +89,7 @@ export class ReviewsService implements OnApplicationBootstrap {
         .findOneAndUpdate(
           { _id: existing._id, userId: existing.userId },
           { $set: { ...(dto.rating !== undefined ? { rating: dto.rating } : {}), ...(dto.comment !== undefined ? { comment: dto.comment } : {}) } },
-          { new: true, runValidators: true, session },
+          { returnDocument: 'after', runValidators: true, session },
         )
         .lean<ReviewRow>()
         .exec();

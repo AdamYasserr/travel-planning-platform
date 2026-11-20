@@ -236,7 +236,7 @@ export class MediaService {
             {
               $push: { photos: publicUrl },
             },
-            { new: true, runValidators: true },
+            { returnDocument: 'after', runValidators: true },
           )
           .exec();
 
@@ -263,7 +263,7 @@ export class MediaService {
             {
               $set: { logo: publicUrl },
             },
-            { new: true, runValidators: true },
+            { returnDocument: 'after', runValidators: true },
           )
           .exec();
 
@@ -289,7 +289,7 @@ export class MediaService {
               },
             },
             { $addToSet: { mediaIds: createdMedia._id } },
-            { new: true },
+            { returnDocument: 'after' },
           )
           .exec();
         if (!updatedPost) {
@@ -325,7 +325,7 @@ export class MediaService {
               status: CommentStatus.VISIBLE,
             },
             { $addToSet: { mediaIds: createdMedia._id } },
-            { new: true },
+            { returnDocument: 'after' },
           )
           .exec();
         if (!updatedComment) {
@@ -542,7 +542,7 @@ export class MediaService {
         .findByIdAndUpdate(
           media.targetId,
           { $pull: { photos: publicUrl } },
-          { new: true },
+          { returnDocument: 'after' },
         )
         .exec();
 
@@ -559,7 +559,7 @@ export class MediaService {
             logo: publicUrl,
           },
           { $set: { logo: null } },
-          { new: true },
+          { returnDocument: 'after' },
         )
         .exec();
 

@@ -277,7 +277,7 @@ return this.toLocalFlightResponse(flight);
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             runValidators: true,
             session,
           },
@@ -417,7 +417,7 @@ return this.toLocalFlightResponse(flight);
         .findOneAndUpdate(
           { _id: flight._id, status: FlightStatus.SCHEDULED, departureTime: { $gt: new Date() } },
           { $set: { status: FlightStatus.CANCELLED } },
-          { session, new: true },
+          { session, returnDocument: 'after' },
         )
         .exec();
       return !!updated;

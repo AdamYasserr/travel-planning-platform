@@ -127,7 +127,7 @@ export class HotelsService {
       .findByIdAndUpdate(
         normalizedHotelId,
         { $set: updateData },
-        { new: true, runValidators: true },
+        { returnDocument: 'after', runValidators: true },
       )
       .exec();
 
@@ -186,7 +186,7 @@ export class HotelsService {
           hotelId: new Types.ObjectId(normalizedHotelId),
         },
         { $set: dto },
-        { new: true, runValidators: true },
+        { returnDocument: 'after', runValidators: true },
       )
       .exec();
 
@@ -527,7 +527,7 @@ async setRoomAvailability(
       .findOneAndUpdate(
         { _id: roomObjectId, hotelId: hotelObjectId },
         { $set: { availabilityRanges: newRanges }, $inc: { holdSeq: 1 } },
-        { new: true, runValidators: true, session },
+        { returnDocument: 'after', runValidators: true, session },
       )
       .exec();
 
@@ -637,7 +637,7 @@ async blockRoomDates(
       .findOneAndUpdate(
         { _id: roomObjectId, hotelId: hotelObjectId },
         { $set: { blockedRanges: mergedRanges }, $inc: { holdSeq: 1 } },
-        { new: true, runValidators: true, session },
+        { returnDocument: 'after', runValidators: true, session },
       )
       .exec();
 
@@ -710,7 +710,7 @@ async deactivateRoom(
       .findOneAndUpdate(
         { _id: roomObjectId, hotelId: hotelObjectId },
         { $set: { isActive: false }, $inc: { holdSeq: 1 } },
-        { new: true, session },
+        { returnDocument: 'after', session },
       )
       .exec();
   });

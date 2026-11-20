@@ -128,7 +128,7 @@ export class PaymentsService {
               holdExpiresAt: booking.holdExpiresAt,
             },
           },
-          { new: true, upsert: true, setDefaultsOnInsert: true },
+          { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
         )
         .exec();
     } catch (error) {
@@ -168,7 +168,7 @@ export class PaymentsService {
       .findOneAndUpdate(
         { _id: payment._id },
         { $set: { stripePaymentIntentId: intent.id } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .exec();
     if (!updated) {
@@ -215,7 +215,7 @@ export class PaymentsService {
       .findOneAndUpdate(
         { _id: payment._id, status: { $in: [PaymentStatus.FAILED, PaymentStatus.PENDING] } },
         { $set: { status: PaymentStatus.PENDING, stripePaymentIntentId: intent.id }, $unset: { lastFailureCode: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .exec();
     if (!updated) throw new ConflictException('The payment changed while it was being retried');
@@ -1064,7 +1064,7 @@ export class PaymentsService {
             ...(force ? {} : { holdExpiresAt: { $lte: now } }),
           },
           { $set: { status: HotelBookingStatus.EXPIRED } },
-          { new: true, session },
+          { returnDocument: 'after', session },
         )
         .exec();
       return !!expired;
@@ -1078,7 +1078,7 @@ export class PaymentsService {
           ...(force ? {} : { holdExpiresAt: { $lte: now } }),
         },
         { $set: { status: FlightBookingStatus.EXPIRED } },
-        { new: true, session },
+        { returnDocument: 'after', session },
       )
       .exec();
     if (expired) await this.releaseFlightSeats(expired, session);
@@ -1130,7 +1130,7 @@ export class PaymentsService {
         .findOneAndUpdate(
           filter as never,
           { $set: update },
-          { new: true, session },
+          { returnDocument: 'after', session },
         )
         .exec();
       return updated as unknown as OwnedBooking | null;
@@ -1139,7 +1139,7 @@ export class PaymentsService {
       .findOneAndUpdate(
         filter as never,
         { $set: update },
-        { new: true, session },
+        { returnDocument: 'after', session },
       )
       .exec();
     return updated as unknown as OwnedBooking | null;
@@ -1266,7 +1266,7 @@ export class PaymentsService {
       .findOneAndUpdate(
         { _id: payment._id },
         update,
-        { new: true, ...(session ? { session } : {}) },
+        { returnDocument: 'after', ...(session ? { session } : {}) },
       )
       .exec();
   }

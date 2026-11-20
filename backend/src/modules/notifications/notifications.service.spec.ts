@@ -21,6 +21,6 @@ describe('NotificationsService', () => {
     const service = new NotificationsService(notifications);
     const userId = new Types.ObjectId().toString();
     await service.markRead(userId, notification._id.toString());
-    expect(notifications.findOneAndUpdate).toHaveBeenCalledWith(expect.objectContaining({ userId: expect.any(Types.ObjectId) }), { $set: { isRead: true } }, { new: true });
+    expect(notifications.findOneAndUpdate).toHaveBeenCalledWith(expect.objectContaining({ userId: expect.any(Types.ObjectId) }), { $set: { isRead: true } }, { returnDocument: 'after' });
   });
 });

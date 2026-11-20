@@ -387,7 +387,7 @@ describe('PaymentsService', () => {
         expect.objectContaining({
           $set: expect.objectContaining({ status: HotelBookingStatus.CONFIRMED, holdExpiresAt: null }),
         }),
-        expect.objectContaining({ new: true }),
+        expect.objectContaining({ returnDocument: 'after' }),
       );
       expect(payment.status).toBe(PaymentStatus.SUCCEEDED);
     });

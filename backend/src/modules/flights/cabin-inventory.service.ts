@@ -402,7 +402,7 @@ export class CabinInventoryService {
         filter,
         [{ $set: setFields }],
         // Mongoose 9 refuses an aggregation-pipeline update unless this is set (it was a 500 before).
-        { new: true, updatePipeline: true },
+        { returnDocument: 'after', updatePipeline: true },
       )
       .exec();
 
