@@ -62,9 +62,10 @@ Flight cancellation remains dependent on the flight-booking, payment/refund, and
 
 ================================================
 Date: 2026-11-17
-Student: Adam
+Student: Youssef Abdelatif (PAY-03), Hania (FLT-06), Youssef Hisham (GEN-01), Ahmed (FLT-23)
 Tool: Claude Code (Claude Opus 5.5)
 Related Requirements: PAY-03, FLT-06, GEN-01, GEN-05, FLT-23
+Assigned owners per team distribution: PAY-03 Youssef Abdelatif; FLT-06 Hania; GEN-01 Youssef Hisham; FLT-23 Ahmed; GEN-05 everyone. Implemented with Claude Code from Adam's account.
 
 Prompts used:
 1. "Implement the connected money/cancellation block: refunds (PAY-03), flight cancellation (FLT-06), notifications for all events (GEN-01), and the e-ticket PDF (FLT-23). Plan first, wait for my approval, then implement." (with the full requirement summary, rules and test list)
@@ -78,9 +79,10 @@ How the output was used:
 
 ================================================
 Date: 2026-11-18
-Student: Adam
+Student: Ahmed (FLT-29, FLT-25, FLT-23), Youssef Abdelatif (HTL-22, HTL-20), Masa (HTL-23, HTL-24)
 Tool: Claude Code (Claude Opus 5.5)
 Related Requirements: FLT-29, HTL-22, HTL-23, HTL-24, FLT-25, HTL-20, FLT-23, GEN-05
+Assigned owners per team distribution: FLT-29, FLT-25, FLT-23 Ahmed; HTL-22, HTL-20 Youssef Abdelatif; HTL-23, HTL-24 Masa; GEN-05 everyone. Implemented with Claude Code from Adam's account.
 
 Prompts used:
 1. "Provider views, hotel reviews, grouped booking lists, e-ticket alias, and the page-size sweep. Plan first, wait for my approval, then implement." (with the requirement summary, validation and access rules, test list and mutation checks)
@@ -94,9 +96,10 @@ How the output was used:
 
 ================================================
 Date: 2026-11-18
-Student: Adam
+Student: Ahmed (FLT-12, FLT-19, FLT-29, FLT-23), Hania (FLT-08, FLT-06)
 Tool: Claude Code (Claude Opus 5.5)
 Related Requirements: FLT-12, FLT-19, FLT-08, FLT-29, FLT-06, FLT-23
+Assigned owners per team distribution: FLT-12, FLT-19, FLT-29, FLT-23 Ahmed; FLT-08, FLT-06 Hania. Implemented with Claude Code from Adam's account.
 
 Prompts used:
 1. "Round-trip booking, passenger details, extra baggage, infant rules in booking, a bug fix, and filling the passenger CSV columns. Plan first, wait for my approval, then implement." (with the requirement summary, the departureTime-copy bug, the CSV columns, rules, test list and mutation checks)
@@ -110,9 +113,10 @@ How the output was used:
 
 ================================================
 Date: 2026-11-18
-Student: Adam
+Student: Gisele (ITN-05 to ITN-26), Adam (GEN-08)
 Tool: Claude Code (Claude Sonnet 5.5)
 Related Requirements: ITN-05, ITN-09, ITN-12, ITN-14, ITN-18, ITN-20, ITN-21, ITN-25, ITN-26, GEN-08
+Assigned owners per team distribution: ITN-05 to ITN-26 Gisele; GEN-08 Adam. Implemented with Claude Code from Adam's account.
 
 Prompts used:
 1. "You are continuing the GIU Software Project 1 backend (NestJS + MongoDB Atlas, shared team DB). Work on the current branch (test-branch). This block finishes the itinerary endpoints. STEP 0 - PLAN ONLY. SCOPE: day dates, city groups, 60-day limit (ITN-05, ITN-09); budget breakdown and summary (ITN-14, ITN-18); activity images POST/DELETE (ITN-12); media limits (GEN-08); public itinerary search (ITN-20, ITN-21); public itinerary detail and clone (ITN-21); itinerary-context hotel and flight search (ITN-25, ITN-26). RULES: additive DB changes only, follow existing patterns, security for private itineraries and image ownership. One new e2e file, three mutation checks, one commit per item group, final report with endpoints, sample bodies and known limitations."
@@ -139,4 +143,75 @@ How the output was used:
 2. Reviewed the changes; verified with tsc, unit tests, an integration test on an in-memory replica set, a run of the real command against an in-memory database (guards, two runs, reset), and mutation checks (reset deleting every hotel, reset ignoring real users' bookings, seed ignoring its manifest) that break key rules and confirm the tests fail.
 
 Summary: demo data seed (npm run seed) with safe reset for the shared database, done with Claude Code.
+================================================
+
+================================================
+Date: 2026-11-19
+Student: Adam
+Tool: Claude Code (Claude Sonnet 5.5)
+Related Requirements: test coverage review (no requirement ID); manual tests 1-144
+
+Prompts used:
+1. "Map every manual test (the 144-row manual test list) to the automated unit, integration and e2e tests that cover it. Write backend/docs/manual-vs-automated.md, mark each test as covered, partly covered or not covered, and list the gaps worth closing. Read-only for source code; only the new document may be added."
+
+How the output was used:
+1. Added backend/docs/manual-vs-automated.md. It showed which manual tests are already covered by automated tests and which are gaps (for example tests 52, 87, 92, 10, 64, 141, 143 and 1). I used it to decide which manual tests were still worth running by hand and to plan extra automated tests.
+================================================
+
+================================================
+Date: 2026-11-20
+Student: Adam
+Tool: Claude Code (Claude Sonnet 5.5)
+Related Requirements: GEN-13, GEN-02, GEN-05, PAY-04, ACC-09 (read-only audit)
+
+Prompts used:
+1. "Read-only audit. Do NOT modify, create, delete or commit any file, and do not run the seed script or anything that writes to the database. Find anything in the backend that would fail grading before submission. Check and report in a table: every Section 8 route and its Swagger documentation; status codes (400/401/403/404/409, no 500 for bad input); default pagination of 10 on every list; moderator creation credentials; itinerary endDate after day changes; removing room blocks; any path that allows a non-USD price; committed secrets and .gitignore; leftover test environment overrides (JWT_EXPIRES_IN, BOOKING_HOLD_MINUTES); every 'new: true' in Mongoose updates; TODO/FIXME, console.log and commented-out code. End with the 5 most important problems, each fixable in under 10 minutes. Do not fix anything."
+
+How the output was used:
+1. Received a table of findings with file and line references and a ranked list of five problems. No file was changed by this step.
+2. Decided myself which findings to act on: fixed the default currency, the unpaginated itinerary list, the deprecated 'new: true' option, missing Swagger summaries and an empty unused file; decided not to build an endpoint to remove room blocks because the requirements only ask for blocking (HTL-06), and left itinerary endDate unchanged because day dates are derived from the start date and day order (ITN-05).
+================================================
+
+================================================
+Date: 2026-11-20
+Student: Adam
+Tool: Claude Code (Claude Sonnet 5.5)
+Related Requirements: documentation and cleanup (no requirement ID)
+
+Prompts used:
+1. "Create or replace README.md at the repo root (overview, prerequisites, setup, seed command and demo logins, run, Stripe test mode with the webhook command, test commands, booking rules, API notes for the frontend, known limitations and optional bonuses not implemented). Create .env.example with every environment variable the code reads, placeholder values only. Replace every 'new: true' in Mongoose update calls with 'returnDocument: after' and update the tests that expect it. Confirm .env is ignored by git and that no tracked file contains a secret." (I asked for no commit and no attribution lines.)
+
+How the output was used:
+1. Added a new root README.md, kept the old README as backend/docs/api-details.md, completed backend/.env.example (placeholders only, JWT_EXPIRES_IN=15m), and replaced 36 uses of 'new: true' with 'returnDocument: after' (one typing error found by tsc was fixed).
+2. The secret scan reported that .env is ignored and was never committed, and that no keys or credentialed connection strings are in tracked files. The tool inferred the optional-bonus list in the README because the requirements document was not in the repository.
+================================================
+
+================================================
+Date: 2026-11-20
+Student: Adam (PAY-04, ACC-09), Gisele (ITN-03)
+Tool: Claude Code (Claude Sonnet 5.5)
+Related Requirements: PAY-04, ACC-09, ITN-03, GEN-05
+
+Prompts used:
+1. "Make four small changes: (1) default a new user's preferredCurrency to the platform currency (USD) instead of EGP and change the Swagger examples that still say EGP; (2) paginate GET /api/itineraries (page, limit default 10 and max 100) and return { items, pagination: { page, limit, totalItems, totalPages } }, still limited to the owner; (3) add @ApiOperation summaries to blog and itinerary routes that lack one; (4) delete the empty unused global-exception.filter.ts after confirming nothing imports it. Do not commit and do not add attribution lines. Then run tsc, the build and the full unit, integration and e2e suites."
+
+How the output was used:
+1. Implemented the four changes and added 3 new e2e tests. Results reported: tsc and the build pass; unit 378/378, integration 32/32, e2e 606/606.
+2. Tested the two behavior changes by hand in Postman: GET /api/itineraries (items plus pagination, limit=abc gives 400, only the user's own itineraries) and a newly registered user has preferredCurrency USD. Both passed.
+================================================
+
+================================================
+Date: 2026-11-17 to 2026-11-20
+Student: Adam
+Tool: Claude (claude.ai chat, Claude Sonnet 5.5)
+Related Requirements: planning and testing support across ACC, FLT, HTL, PAY, ITN, GEN
+
+Prompts used:
+1. Asked the assistant to act as a planner and reviewer for the backend: break the remaining requirements into ordered blocks, write the prompts for Claude Code, and review the reports Claude Code returned.
+2. Asked it to write a list of manual API tests (144, later 146) with the exact endpoint, steps and expected result for each, and to guide me through running them in Postman and Swagger, one at a time, interpreting each response I pasted back.
+3. Asked it to keep two tracking spreadsheets up to date (task checklist, manual test results) and to compare the code behavior with the requirements workbook (for example, whether unblocking a room is required, and which bonus requirements exist).
+
+How the output was used:
+1. I ran every manual test myself against the running backend and the Stripe test mode, and reported the real responses; results were recorded as Pass / Not run (141 of 146 passed at the time of writing; 5 slow or optional tests were intentionally not run). No test was recorded as passed without a response I had pasted.
+2. The assistant's prompts for Claude Code were reviewed and edited by me before use; its explanations of API errors were used to fix request bodies, and one wrong suggestion was corrected after a test showed otherwise.
 ================================================
