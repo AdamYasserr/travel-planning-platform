@@ -87,7 +87,7 @@ npm run build && npm run start:prod    # production
 Run the Stripe CLI in a second terminal for as long as you test payments:
 
 ```bash
-stripe listen --forward-to localhost:3000/api/payments/webhook
+stripe listen --all-snapshot --forward-to localhost:3000/api/payments/webhook
 ```
 
 Copy the `whsec_...` value it prints into `STRIPE_WEBHOOK_SECRET` and restart the server. (`/api/stripe/webhook` is an alias of the same route.)
@@ -125,7 +125,20 @@ Test card: `4242 4242 4242 4242`, any future expiry, any CVC. In test mode, `POS
 
 ## Known limitations
 
-- Optional bonus features are not implemented. The project description is not in this repository, so this list is what the code does not contain: seat selection (the e-ticket says "Assigned at check-in"), e-mail delivery of notifications (notifications are stored and listed in the app only), social login, two-factor authentication and real-time (websocket) updates.
+- Bonus requirements:
+  - ACC-02
+  - ACC-07
+  - GEN-01-B
+  - FLT-27
+  - FLT-28
+  - HTL-26
+  - ITN-27
+  - ITN-28
+  - BLG-13
+  - BON-01
+  - BON-02
+
+  None of the bonus requirements were implemented; all 93 mandatory requirements are.
 - Room blocks cannot be removed through the API. `PATCH /api/hotels/{hotelId}/rooms/{roomId}/blocks` only adds blocked ranges.
 - Moderator creation (`POST /api/admin/moderators`) returns no initial password. An admin sets one with `POST /api/admin/users/{id}/reset-password`, which returns a temporary password once; the moderator must change it at first login.
 - The seeded Confirmed bookings use local stand-in payment ids, not real Stripe objects. Do not cancel them through the API with real Stripe keys; book a new flight for refund tests.
